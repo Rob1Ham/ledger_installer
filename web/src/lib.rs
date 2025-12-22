@@ -3,6 +3,8 @@
 //! This crate provides JavaScript-callable functions for managing Ledger devices
 //! from a web browser using the WebHID API.
 
+use gloo_net::http::Request;
+use gloo_net::websocket::{futures::WebSocket, Message};
 use ledger_manager::ledger_apdu::APDUCommand;
 use ledger_manager::transport::{is_webhid_supported, WebHidTransport};
 use serde::{Deserialize, Serialize};
@@ -14,6 +16,13 @@ use wasm_bindgen::prelude::*;
 thread_local! {
     static TRANSPORT: RefCell<Option<Rc<WebHidTransport>>> = const { RefCell::new(None) };
 }
+
+// Ledger API constants
+const LIVE_COMMON_VERSION: &str = "34.0.0";
+const PROVIDER: u32 = 1;
+const BASE_API_V1_URL: &str = "https://manager.api.live.ledger.com/api";
+const BASE_API_V2_URL: &str = "https://manager.api.live.ledger.com/api/v2";
+const BASE_SOCKET_URL: &str = "wss://scriptrunner.api.live.ledger.com/update";
 
 /// Initialize panic hook for better error messages in console.
 #[wasm_bindgen(start)]
@@ -28,6 +37,7 @@ pub struct DeviceInfo {
     pub model: Option<String>,
     pub version: Option<String>,
     pub mcu_version: Option<String>,
+    pub target_id: Option<u32>,
     pub bitcoin_installed: bool,
     pub bitcoin_version: Option<String>,
     pub bitcoin_test_installed: bool,
@@ -41,6 +51,47 @@ pub struct OperationResult {
     pub message: String,
 }
 
+// API response types
+#[derive(Debug, Clone, Deserialize)]
+struct DeviceVersion {
+    id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct FirmwareInfoResponse {
+    perso: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct BitcoinAppInfo {
+    #[serde(rename = "versionName")]
+    version_name: String,
+    #[allow(dead_code)]
+    version: String,
+    perso: String,
+    #[serde(rename = "deleteKey")]
+    delete_key: String,
+    firmware: String,
+    #[serde(rename = "firmwareKey")]
+    firmware_key: String,
+    hash: String,
+}
+
+// HSM WebSocket message types
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum HsmMessageData {
+    Command(String),
+    CommandList(Vec<String>),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct HsmMessage {
+    query: String,
+    nonce: u32,
+    data: Option<HsmMessageData>,
+}
+
 /// Check if WebHID is supported in the current browser.
 #[wasm_bindgen]
 pub fn check_webhid_support() -> bool {
@@ -48,14 +99,10 @@ pub fn check_webhid_support() -> bool {
 }
 
 /// Request access to a Ledger device.
-///
-/// This must be called from a user gesture (button click).
-/// Returns a promise that resolves to true if successful.
 #[wasm_bindgen]
 pub async fn connect_device() -> Result<JsValue, JsValue> {
     match WebHidTransport::request_device().await {
         Ok(transport) => {
-            // Store the transport for future use
             let transport = Rc::new(transport);
             TRANSPORT.with(|t| {
                 *t.borrow_mut() = Some(transport);
@@ -102,13 +149,25 @@ const CONTINUE_LIST_APPS: APDUCommand<&[u8]> = APDUCommand {
     data: &[],
 };
 
+/// Stored device info for API calls
+#[derive(Clone)]
+struct StoredDeviceInfo {
+    target_id: u32,
+    version: String,
+}
+
+thread_local! {
+    static DEVICE_INFO: RefCell<Option<StoredDeviceInfo>> = const { RefCell::new(None) };
+}
+
 /// Parse device version info from APDU response
-fn parse_version_info(data: &[u8]) -> Option<(String, Option<String>)> {
+fn parse_version_info(data: &[u8]) -> Option<(u32, String, Option<String>)> {
     if data.len() < 5 {
         return None;
     }
 
-    let mut i = 4; // Skip target_id
+    let target_id = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+    let mut i = 4;
     let ver_len = data[i] as usize;
     i += 1;
 
@@ -122,7 +181,6 @@ fn parse_version_info(data: &[u8]) -> Option<(String, Option<String>)> {
     let flags_len = data[i] as usize;
     i += 1 + flags_len;
 
-    // Try to get MCU version if available
     let mcu_version = if data.len() > i {
         let mcu_len = data[i] as usize;
         i += 1;
@@ -141,7 +199,7 @@ fn parse_version_info(data: &[u8]) -> Option<(String, Option<String>)> {
         None
     };
 
-    Some((version, mcu_version))
+    Some((target_id, version, mcu_version))
 }
 
 /// Parse installed apps from APDU response
@@ -181,41 +239,56 @@ fn parse_installed_apps(data: &[u8]) -> Vec<(String, Vec<u8>)> {
     apps
 }
 
+fn deser_apdu_command(hex_str: &str) -> Result<APDUCommand<Vec<u8>>, String> {
+    let bytes = hex::decode(hex_str).map_err(|e| e.to_string())?;
+    if bytes.len() < 5 {
+        return Err("Invalid command".into());
+    }
+
+    let (cla, ins, p1, p2, data_len) = (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4] as usize);
+    if bytes.len() != 5 + data_len {
+        return Err("Invalid command".into());
+    }
+
+    Ok(APDUCommand {
+        cla,
+        ins,
+        p1,
+        p2,
+        data: bytes[5..].to_vec(),
+    })
+}
+
 /// Get device information.
-///
-/// This attempts to connect to a previously authorized device and query its info.
 #[wasm_bindgen]
 pub async fn get_device_info() -> Result<JsValue, JsValue> {
-    // Try to get existing transport or connect to authorized device
     let transport = TRANSPORT.with(|t| t.borrow().clone());
 
     let transport = match transport {
         Some(t) if t.is_device_open() => t,
-        _ => {
-            // Try to connect to an already-authorized device
-            match WebHidTransport::connect_authorized().await {
-                Ok(t) => {
-                    let t = Rc::new(t);
-                    TRANSPORT.with(|tr| {
-                        *tr.borrow_mut() = Some(t.clone());
-                    });
-                    t
-                }
-                Err(_) => {
-                    let info = DeviceInfo {
-                        connected: false,
-                        model: None,
-                        version: None,
-                        mcu_version: None,
-                        bitcoin_installed: false,
-                        bitcoin_version: None,
-                        bitcoin_test_installed: false,
-                        bitcoin_test_version: None,
-                    };
-                    return Ok(serde_wasm_bindgen::to_value(&info)?);
-                }
+        _ => match WebHidTransport::connect_authorized().await {
+            Ok(t) => {
+                let t = Rc::new(t);
+                TRANSPORT.with(|tr| {
+                    *tr.borrow_mut() = Some(t.clone());
+                });
+                t
             }
-        }
+            Err(_) => {
+                let info = DeviceInfo {
+                    connected: false,
+                    model: None,
+                    version: None,
+                    mcu_version: None,
+                    target_id: None,
+                    bitcoin_installed: false,
+                    bitcoin_version: None,
+                    bitcoin_test_installed: false,
+                    bitcoin_test_version: None,
+                };
+                return Ok(serde_wasm_bindgen::to_value(&info)?);
+            }
+        },
     };
 
     // Get version info
@@ -227,16 +300,26 @@ pub async fn get_device_info() -> Result<JsValue, JsValue> {
         data: vec![],
     };
 
-    let (version, mcu_version) = match transport.exchange_async(&cmd).await {
+    let (target_id, version, mcu_version) = match transport.exchange_async(&cmd).await {
         Ok(answer) => {
             if answer.retcode() == 0x9000 {
-                parse_version_info(answer.data()).unwrap_or((String::new(), None))
+                parse_version_info(answer.data()).unwrap_or((0, String::new(), None))
             } else {
-                (String::new(), None)
+                (0, String::new(), None)
             }
         }
-        Err(_) => (String::new(), None),
+        Err(_) => (0, String::new(), None),
     };
+
+    // Store device info for later API calls
+    if target_id != 0 && !version.is_empty() {
+        DEVICE_INFO.with(|d| {
+            *d.borrow_mut() = Some(StoredDeviceInfo {
+                target_id,
+                version: version.clone(),
+            });
+        });
+    }
 
     // Get installed apps
     let cmd = APDUCommand {
@@ -253,7 +336,6 @@ pub async fn get_device_info() -> Result<JsValue, JsValue> {
         if answer.retcode() == 0x9000 {
             all_apps.extend(parse_installed_apps(answer.data()));
 
-            // Continue listing if there are more
             loop {
                 let cmd = APDUCommand {
                     cla: CONTINUE_LIST_APPS.cla,
@@ -276,7 +358,6 @@ pub async fn get_device_info() -> Result<JsValue, JsValue> {
         }
     }
 
-    // Check for Bitcoin apps
     let bitcoin_installed = all_apps
         .iter()
         .any(|(name, _)| name.to_lowercase() == "bitcoin");
@@ -293,8 +374,13 @@ pub async fn get_device_info() -> Result<JsValue, JsValue> {
             Some(version)
         },
         mcu_version,
+        target_id: if target_id != 0 {
+            Some(target_id)
+        } else {
+            None
+        },
         bitcoin_installed,
-        bitcoin_version: None, // Would need API call to get version
+        bitcoin_version: None,
         bitcoin_test_installed,
         bitcoin_test_version: None,
     };
@@ -320,7 +406,6 @@ pub async fn open_bitcoin_app(testnet: bool) -> Result<JsValue, JsValue> {
         }
     };
 
-    // Open app command
     let cmd = APDUCommand {
         cla: 0xe0,
         ins: 0xd8,
@@ -359,49 +444,322 @@ pub async fn open_bitcoin_app(testnet: bool) -> Result<JsValue, JsValue> {
     }
 }
 
-/// Install the Bitcoin app on the device.
-#[wasm_bindgen]
-pub async fn install_bitcoin_app(testnet: bool) -> Result<JsValue, JsValue> {
-    let app_name = if testnet { "Bitcoin Test" } else { "Bitcoin" };
+/// Get firmware info from Ledger API
+async fn get_firmware_info(target_id: u32, version: &str) -> Result<String, String> {
+    // First get device version ID
+    let dev_ver_url = format!(
+        "{}/get_device_version?livecommonversion={}",
+        BASE_API_V1_URL, LIVE_COMMON_VERSION
+    );
 
-    // Installing apps requires WebSocket communication with Ledger's HSM
-    // This is complex and requires:
-    // 1. HTTP request to get app metadata from Ledger API
-    // 2. WebSocket connection to Ledger's HSM
-    // 3. Multiple APDU exchanges through the WebSocket
-    //
-    // For now, we provide a helpful message
-    let result = OperationResult {
-        success: false,
-        message: format!(
-            "Installing {} app requires WebSocket communication with Ledger's servers. \
-             This feature requires additional implementation. \
-             Please use the desktop CLI or GUI app for installation.",
-            app_name
-        ),
-    };
+    let dev_ver_body = serde_json::json!({
+        "provider": PROVIDER,
+        "target_id": target_id,
+    });
 
-    Ok(serde_wasm_bindgen::to_value(&result)?)
+    let dev_ver_resp = Request::post(&dev_ver_url)
+        .header("Content-Type", "application/json")
+        .body(dev_ver_body.to_string())
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !dev_ver_resp.ok() {
+        return Err(format!(
+            "Failed to get device version: {}",
+            dev_ver_resp.status()
+        ));
+    }
+
+    let device_version: DeviceVersion = dev_ver_resp.json().await.map_err(|e| e.to_string())?;
+
+    // Now get firmware info
+    let firm_url = format!(
+        "{}/get_firmware_version?livecommonversion={}",
+        BASE_API_V1_URL, LIVE_COMMON_VERSION
+    );
+
+    let firm_body = serde_json::json!({
+        "provider": PROVIDER,
+        "device_version": device_version.id,
+        "version_name": version,
+    });
+
+    let firm_resp = Request::post(&firm_url)
+        .header("Content-Type", "application/json")
+        .body(firm_body.to_string())
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !firm_resp.ok() {
+        return Err(format!(
+            "Failed to get firmware info: {}",
+            firm_resp.status()
+        ));
+    }
+
+    let firmware_info: FirmwareInfoResponse = firm_resp.json().await.map_err(|e| e.to_string())?;
+    Ok(firmware_info.perso)
+}
+
+/// Get Bitcoin app info from Ledger API
+async fn get_bitcoin_app_info(
+    target_id: u32,
+    version: &str,
+    testnet: bool,
+) -> Result<BitcoinAppInfo, String> {
+    let url = format!(
+        "{}/apps/by-target?livecommonversion={}&provider={}&target_id={}&firmware_version_name={}",
+        BASE_API_V2_URL, LIVE_COMMON_VERSION, PROVIDER, target_id, version
+    );
+
+    let resp = Request::get(&url).send().await.map_err(|e| e.to_string())?;
+
+    if !resp.ok() {
+        return Err(format!("Failed to get app info: {}", resp.status()));
+    }
+
+    let apps: Vec<BitcoinAppInfo> = resp.json().await.map_err(|e| e.to_string())?;
+
+    let app_name = if testnet { "bitcoin test" } else { "bitcoin" };
+    apps.into_iter()
+        .find(|app| app.version_name.to_lowercase() == app_name)
+        .ok_or_else(|| format!("Bitcoin app not found for this device"))
+}
+
+/// Execute WebSocket communication with Ledger HSM
+async fn query_via_websocket(transport: Rc<WebHidTransport>, url: &str) -> Result<(), String> {
+    use futures::{SinkExt, StreamExt};
+
+    let ws =
+        WebSocket::open(url).map_err(|e| format!("Failed to connect to WebSocket: {:?}", e))?;
+    let (mut write, mut read) = ws.split();
+
+    while let Some(msg) = read.next().await {
+        match msg {
+            Ok(Message::Text(text)) => {
+                let hsm_msg: HsmMessage = serde_json::from_str(&text)
+                    .map_err(|e| format!("Failed to parse HSM message: {}", e))?;
+
+                if hsm_msg.query == "exchange" {
+                    let command_hex = match hsm_msg.data {
+                        Some(HsmMessageData::Command(h)) => h,
+                        _ => return Err("Expected single command in exchange mode".into()),
+                    };
+                    let command = deser_apdu_command(&command_hex)?;
+
+                    let resp = transport
+                        .exchange_async(&command)
+                        .await
+                        .map_err(|e| format!("APDU exchange failed: {}", e))?;
+
+                    let response = if resp.retcode() == 0x9000 {
+                        "success"
+                    } else {
+                        "error"
+                    };
+                    let resp_data = hex::encode(resp.data());
+
+                    let ws_resp = serde_json::json!({
+                        "nonce": hsm_msg.nonce,
+                        "response": response,
+                        "data": resp_data,
+                    });
+
+                    write
+                        .send(Message::Text(ws_resp.to_string()))
+                        .await
+                        .map_err(|e| format!("Failed to send WebSocket message: {:?}", e))?;
+                } else if hsm_msg.query == "bulk" {
+                    let commands = match hsm_msg.data {
+                        Some(HsmMessageData::CommandList(l)) => l,
+                        _ => return Err("Expected command list in bulk mode".into()),
+                    };
+
+                    for cmd_hex in commands {
+                        if cmd_hex.is_empty() {
+                            continue;
+                        }
+                        let command = deser_apdu_command(&cmd_hex)?;
+                        let _ = transport
+                            .exchange_async(&command)
+                            .await
+                            .map_err(|e| format!("APDU exchange failed: {}", e))?;
+                    }
+
+                    let ws_resp = serde_json::json!({
+                        "nonce": hsm_msg.nonce,
+                        "response": "success",
+                        "data": "",
+                    });
+
+                    write
+                        .send(Message::Text(ws_resp.to_string()))
+                        .await
+                        .map_err(|e| format!("Failed to send WebSocket message: {:?}", e))?;
+                } else if hsm_msg.query == "success" {
+                    return Ok(());
+                } else if hsm_msg.query == "error" {
+                    return Err(format!("HSM returned error: {}", text));
+                } else if hsm_msg.query == "warning" {
+                    // Log warning but continue
+                    web_sys::console::warn_1(&JsValue::from_str(&format!("HSM warning: {}", text)));
+                }
+            }
+            Ok(Message::Bytes(_)) => {
+                return Err("Unexpected binary message from WebSocket".into());
+            }
+            Err(e) => {
+                return Err(format!("WebSocket error: {:?}", e));
+            }
+        }
+    }
+
+    Err("WebSocket closed unexpectedly".into())
 }
 
 /// Perform genuine check on the device.
 #[wasm_bindgen]
 pub async fn genuine_check() -> Result<JsValue, JsValue> {
-    // Genuine check requires WebSocket communication with Ledger's HSM
-    // Similar to install, this needs:
-    // 1. HTTP request to get firmware info
-    // 2. WebSocket connection to Ledger's HSM for verification
-    //
-    // For now, we provide a helpful message
-    let result = OperationResult {
-        success: false,
-        message: "Genuine check requires WebSocket communication with Ledger's servers. \
-                  This feature requires additional implementation. \
-                  Please use the desktop CLI or GUI app for genuine verification."
-            .to_string(),
+    let transport = TRANSPORT.with(|t| t.borrow().clone());
+    let device_info = DEVICE_INFO.with(|d| d.borrow().clone());
+
+    let transport = match transport {
+        Some(t) if t.is_device_open() => t,
+        _ => {
+            let result = OperationResult {
+                success: false,
+                message: "Device not connected. Please connect and get device info first."
+                    .to_string(),
+            };
+            return Ok(serde_wasm_bindgen::to_value(&result)?);
+        }
     };
 
-    Ok(serde_wasm_bindgen::to_value(&result)?)
+    let device_info = match device_info {
+        Some(info) => info,
+        None => {
+            let result = OperationResult {
+                success: false,
+                message: "Device info not available. Please get device info first.".to_string(),
+            };
+            return Ok(serde_wasm_bindgen::to_value(&result)?);
+        }
+    };
+
+    // Get firmware perso from API
+    let perso = match get_firmware_info(device_info.target_id, &device_info.version).await {
+        Ok(p) => p,
+        Err(e) => {
+            let result = OperationResult {
+                success: false,
+                message: format!("Failed to get firmware info: {}", e),
+            };
+            return Ok(serde_wasm_bindgen::to_value(&result)?);
+        }
+    };
+
+    // Build WebSocket URL for genuine check
+    let ws_url = format!(
+        "{}/genuine?targetId={}&perso={}",
+        BASE_SOCKET_URL,
+        device_info.target_id,
+        urlencoding::encode(&perso)
+    );
+
+    match query_via_websocket(transport, &ws_url).await {
+        Ok(()) => {
+            let result = OperationResult {
+                success: true,
+                message: "Device is genuine!".to_string(),
+            };
+            Ok(serde_wasm_bindgen::to_value(&result)?)
+        }
+        Err(e) => {
+            let result = OperationResult {
+                success: false,
+                message: format!("Genuine check failed: {}", e),
+            };
+            Ok(serde_wasm_bindgen::to_value(&result)?)
+        }
+    }
+}
+
+/// Install the Bitcoin app on the device.
+#[wasm_bindgen]
+pub async fn install_bitcoin_app(testnet: bool) -> Result<JsValue, JsValue> {
+    let app_name = if testnet { "Bitcoin Test" } else { "Bitcoin" };
+
+    let transport = TRANSPORT.with(|t| t.borrow().clone());
+    let device_info = DEVICE_INFO.with(|d| d.borrow().clone());
+
+    let transport = match transport {
+        Some(t) if t.is_device_open() => t,
+        _ => {
+            let result = OperationResult {
+                success: false,
+                message: "Device not connected. Please connect and get device info first."
+                    .to_string(),
+            };
+            return Ok(serde_wasm_bindgen::to_value(&result)?);
+        }
+    };
+
+    let device_info = match device_info {
+        Some(info) => info,
+        None => {
+            let result = OperationResult {
+                success: false,
+                message: "Device info not available. Please get device info first.".to_string(),
+            };
+            return Ok(serde_wasm_bindgen::to_value(&result)?);
+        }
+    };
+
+    // Get Bitcoin app info from API
+    let app_info =
+        match get_bitcoin_app_info(device_info.target_id, &device_info.version, testnet).await {
+            Ok(info) => info,
+            Err(e) => {
+                let result = OperationResult {
+                    success: false,
+                    message: format!("Failed to get {} app info: {}", app_name, e),
+                };
+                return Ok(serde_wasm_bindgen::to_value(&result)?);
+            }
+        };
+
+    // Build WebSocket URL for install
+    let ws_url = format!(
+        "{}/install?targetId={}&perso={}&deleteKey={}&firmware={}&firmwareKey={}&hash={}",
+        BASE_SOCKET_URL,
+        device_info.target_id,
+        urlencoding::encode(&app_info.perso),
+        urlencoding::encode(&app_info.delete_key),
+        urlencoding::encode(&app_info.firmware),
+        urlencoding::encode(&app_info.firmware_key),
+        urlencoding::encode(&app_info.hash)
+    );
+
+    match query_via_websocket(transport, &ws_url).await {
+        Ok(()) => {
+            let result = OperationResult {
+                success: true,
+                message: format!("{} app installed successfully!", app_name),
+            };
+            Ok(serde_wasm_bindgen::to_value(&result)?)
+        }
+        Err(e) => {
+            let result = OperationResult {
+                success: false,
+                message: format!("Failed to install {} app: {}", app_name, e),
+            };
+            Ok(serde_wasm_bindgen::to_value(&result)?)
+        }
+    }
 }
 
 /// Log a message to the browser console.
