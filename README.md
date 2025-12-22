@@ -72,6 +72,7 @@ For now those commands are implemented:
 - `installapp`: install the Bitcoin app on your device
 - `updateapp`: update the Bitcoin app on your device
 - `openapp`: open the Bitcoin app on your device
+- `updatefirm`: update the device firmware (also repairs devices stuck in bootloader mode)
 
 ### Examples
 
@@ -99,8 +100,6 @@ Successfully installed the app.
 ## Future
 
 We are looking into people to help test this and confirm it works in as many scenarii as possible.
-
-We are probably going to have to introduce an `upgradefirmware` command.
 
 Contributions welcome! If you are interested, get in touch on the [Liana
 Discord](https://discord.gg/QJUp67zSN4).
