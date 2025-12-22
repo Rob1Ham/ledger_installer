@@ -827,3 +827,282 @@ pub async fn install_bitcoin_app(testnet: bool) -> Result<JsValue, JsValue> {
 pub fn log(message: &str) {
     web_sys::console::log_1(&JsValue::from_str(message));
 }
+
+// ============================================================================
+// Firmware Update Types and Functions
+// ============================================================================
+
+/// Response from /get_device_version endpoint
+#[derive(Debug, Clone, Deserialize)]
+struct DeviceVersionResponseApi {
+    id: i64,
+    #[serde(default)]
+    se_firmware_final_versions: Vec<i64>,
+}
+
+/// Response from /get_firmware_version endpoint for getting current version ID
+#[derive(Debug, Clone, Deserialize)]
+struct FirmwareVersionIdResponse {
+    id: i64,
+}
+
+/// OSU firmware metadata
+#[derive(Debug, Clone, Deserialize)]
+struct OsuFirmwareApi {
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    perso: String,
+    #[serde(default)]
+    firmware: String,
+    #[serde(default)]
+    firmware_key: String,
+    #[serde(default)]
+    hash: String,
+    #[serde(default)]
+    next_se_firmware_final_version: i64,
+}
+
+/// Response from /get_latest_firmware endpoint
+#[derive(Debug, Clone, Deserialize)]
+struct LatestFirmwareResponseApi {
+    result: String,
+    #[serde(default)]
+    se_firmware_osu_version: Option<OsuFirmwareApi>,
+}
+
+/// Final firmware metadata
+#[derive(Debug, Clone, Deserialize)]
+struct FinalFirmwareApi {
+    id: i64,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    perso: String,
+    #[serde(default)]
+    firmware: String,
+    #[serde(default)]
+    firmware_key: String,
+    #[serde(default)]
+    hash: String,
+    #[serde(default)]
+    mcu_versions: Vec<i64>,
+}
+
+/// Firmware update info returned to JavaScript
+#[derive(Serialize, Deserialize)]
+pub struct FirmwareUpdateInfo {
+    pub update_available: bool,
+    pub current_version: Option<String>,
+    pub target_version: Option<String>,
+    pub message: String,
+}
+
+/// Generate a firmware salt (pseudo-random)
+fn generate_firmware_salt() -> String {
+    use js_sys::Date;
+    let timestamp = Date::now() as u64;
+    let hash_input = format!("{}|firmwareSalt", timestamp);
+    let bytes = hash_input.as_bytes();
+    let mut hash: u32 = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        hash = hash.wrapping_add((b as u32).wrapping_mul((i as u32).wrapping_add(1)));
+        hash = hash.wrapping_mul(31);
+    }
+    format!("{:06x}", hash & 0xFFFFFF)
+}
+
+/// Get the device version info from the Ledger API
+async fn get_device_version_from_api_web(
+    target_id: u32,
+) -> Result<DeviceVersionResponseApi, String> {
+    let url = format!(
+        "{}/get_device_version?livecommonversion={}&provider={}&target_id={}",
+        BASE_API_V1_URL, LIVE_COMMON_VERSION, PROVIDER, target_id
+    );
+
+    let resp = Request::get(&url).send().await.map_err(|e| e.to_string())?;
+
+    if !resp.ok() {
+        return Err(format!(
+            "HTTP {}: Failed to get device version",
+            resp.status()
+        ));
+    }
+
+    resp.json().await.map_err(|e| e.to_string())
+}
+
+/// Get the current firmware version ID
+async fn get_current_firmware_version_id_web(
+    device_version_id: i64,
+    version_name: &str,
+) -> Result<i64, String> {
+    let url = format!(
+        "{}/get_firmware_version?livecommonversion={}&device_version={}&version_name={}&provider={}",
+        BASE_API_V1_URL, LIVE_COMMON_VERSION, device_version_id, version_name, PROVIDER
+    );
+
+    let resp = Request::get(&url).send().await.map_err(|e| e.to_string())?;
+
+    if !resp.ok() {
+        return Err(format!(
+            "HTTP {}: Failed to get firmware version",
+            resp.status()
+        ));
+    }
+
+    let firmware_info: FirmwareVersionIdResponse = resp.json().await.map_err(|e| e.to_string())?;
+    Ok(firmware_info.id)
+}
+
+/// Get the latest available firmware
+async fn get_latest_firmware_from_api_web(
+    current_version: i64,
+    device_version: i64,
+) -> Result<Option<OsuFirmwareApi>, String> {
+    let salt = generate_firmware_salt();
+
+    let url = format!(
+        "{}/get_latest_firmware?livecommonversion={}&salt={}&current_se_firmware_final_version={}&device_version={}&provider={}",
+        BASE_API_V1_URL, LIVE_COMMON_VERSION, salt, current_version, device_version, PROVIDER
+    );
+
+    let resp = Request::get(&url).send().await.map_err(|e| e.to_string())?;
+
+    if !resp.ok() {
+        return Err(format!(
+            "HTTP {}: Failed to get latest firmware",
+            resp.status()
+        ));
+    }
+
+    let latest: LatestFirmwareResponseApi = resp.json().await.map_err(|e| e.to_string())?;
+    Ok(latest.se_firmware_osu_version)
+}
+
+/// Get final firmware by ID
+async fn get_final_firmware_by_id_web(id: i64) -> Result<FinalFirmwareApi, String> {
+    let url = format!(
+        "{}/firmware_final_versions/{}?livecommonversion={}",
+        BASE_API_V1_URL, id, LIVE_COMMON_VERSION
+    );
+
+    let resp = Request::get(&url).send().await.map_err(|e| e.to_string())?;
+
+    if !resp.ok() {
+        return Err(format!(
+            "HTTP {}: Failed to get final firmware",
+            resp.status()
+        ));
+    }
+
+    resp.json().await.map_err(|e| e.to_string())
+}
+
+/// Check if a firmware update is available for the connected device.
+#[wasm_bindgen]
+pub async fn check_firmware_update() -> Result<JsValue, JsValue> {
+    let device_info = DEVICE_INFO.with(|d| d.borrow().clone());
+
+    let device_info = match device_info {
+        Some(info) => info,
+        None => {
+            let result = FirmwareUpdateInfo {
+                update_available: false,
+                current_version: None,
+                target_version: None,
+                message: "Device info not available. Please get device info first.".to_string(),
+            };
+            return Ok(serde_wasm_bindgen::to_value(&result)?);
+        }
+    };
+
+    // Step 1: Get device version from API
+    let device_version_api = match get_device_version_from_api_web(device_info.target_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            let result = FirmwareUpdateInfo {
+                update_available: false,
+                current_version: Some(device_info.version.clone()),
+                target_version: None,
+                message: format!("Failed to get device version from API: {}", e),
+            };
+            return Ok(serde_wasm_bindgen::to_value(&result)?);
+        }
+    };
+
+    // Step 2: Get current firmware version ID
+    let current_firmware_id = match get_current_firmware_version_id_web(
+        device_version_api.id,
+        &device_info.version,
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            let result = FirmwareUpdateInfo {
+                update_available: false,
+                current_version: Some(device_info.version.clone()),
+                target_version: None,
+                message: format!("Failed to get current firmware version: {}", e),
+            };
+            return Ok(serde_wasm_bindgen::to_value(&result)?);
+        }
+    };
+
+    // Step 3: Check for latest firmware
+    let latest_osu =
+        match get_latest_firmware_from_api_web(current_firmware_id, device_version_api.id).await {
+            Ok(osu) => osu,
+            Err(e) => {
+                let result = FirmwareUpdateInfo {
+                    update_available: false,
+                    current_version: Some(device_info.version.clone()),
+                    target_version: None,
+                    message: format!("Failed to check for updates: {}", e),
+                };
+                return Ok(serde_wasm_bindgen::to_value(&result)?);
+            }
+        };
+
+    // Step 4: If OSU is available, get the final firmware version info
+    match latest_osu {
+        Some(osu) if osu.next_se_firmware_final_version > 0 => {
+            match get_final_firmware_by_id_web(osu.next_se_firmware_final_version).await {
+                Ok(final_fw) => {
+                    let result = FirmwareUpdateInfo {
+                        update_available: true,
+                        current_version: Some(device_info.version.clone()),
+                        target_version: Some(final_fw.version.clone()),
+                        message: format!(
+                            "Update available: {} -> {}",
+                            device_info.version, final_fw.version
+                        ),
+                    };
+                    Ok(serde_wasm_bindgen::to_value(&result)?)
+                }
+                Err(e) => {
+                    let result = FirmwareUpdateInfo {
+                        update_available: true,
+                        current_version: Some(device_info.version.clone()),
+                        target_version: None,
+                        message: format!("Update available but failed to get details: {}", e),
+                    };
+                    Ok(serde_wasm_bindgen::to_value(&result)?)
+                }
+            }
+        }
+        _ => {
+            let result = FirmwareUpdateInfo {
+                update_available: false,
+                current_version: Some(device_info.version.clone()),
+                target_version: None,
+                message: format!("Firmware is up to date ({})", device_info.version),
+            };
+            Ok(serde_wasm_bindgen::to_value(&result)?)
+        }
+    }
+}

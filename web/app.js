@@ -50,6 +50,9 @@ function setupEventListeners() {
     document.getElementById('install-bitcoin-test-btn').addEventListener('click', () => installBitcoinApp(true));
     document.getElementById('open-bitcoin-test-btn').addEventListener('click', () => openBitcoinApp(true));
 
+    // Firmware check button
+    document.getElementById('check-firmware-btn').addEventListener('click', checkFirmwareUpdate);
+
     // Clear log button
     document.getElementById('clear-log-btn').addEventListener('click', clearLog);
 }
@@ -187,6 +190,53 @@ async function runGenuineCheck() {
     }
 }
 
+// Check for firmware updates
+async function checkFirmwareUpdate() {
+    const btn = document.getElementById('check-firmware-btn');
+    const statusDiv = document.getElementById('firmware-status');
+    const resultDiv = document.getElementById('firmware-result');
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading"></span>Checking...';
+
+    statusDiv.innerHTML = '<div class="result pending">Checking for firmware updates...</div>';
+    resultDiv.innerHTML = '';
+
+    try {
+        log('Checking for firmware updates...', 'info');
+        const result = await wasm.check_firmware_update();
+
+        if (result.update_available) {
+            statusDiv.innerHTML = `
+                <p class="app-status update-available">
+                    <strong>Update Available!</strong><br>
+                    Current: ${result.current_version || 'Unknown'}<br>
+                    Latest: ${result.target_version || 'Unknown'}
+                </p>
+            `;
+            resultDiv.innerHTML = '<div class="result warning">A firmware update is available for your device.</div>';
+            log(`Firmware update available: ${result.current_version} → ${result.target_version}`, 'warning');
+        } else {
+            statusDiv.innerHTML = `
+                <p class="app-status installed">
+                    <strong>Up to date</strong><br>
+                    Version: ${result.current_version || 'Unknown'}
+                </p>
+            `;
+            resultDiv.innerHTML = '<div class="result success">Your firmware is up to date!</div>';
+            log('Firmware is up to date', 'success');
+        }
+    } catch (error) {
+        statusDiv.innerHTML = '<p class="placeholder">Connect device to check firmware status</p>';
+        resultDiv.innerHTML = `<div class="result error">Error: ${error}</div>`;
+        log(`Firmware check error: ${error}`, 'error');
+        console.error('Firmware check error:', error);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
 // Install Bitcoin app
 async function installBitcoinApp(testnet) {
     const btnId = testnet ? 'install-bitcoin-test-btn' : 'install-bitcoin-btn';
@@ -260,6 +310,7 @@ function updateConnectionStatus(connected) {
 function enableButtons() {
     document.getElementById('refresh-info-btn').disabled = false;
     document.getElementById('genuine-btn').disabled = false;
+    document.getElementById('check-firmware-btn').disabled = false;
     document.getElementById('install-bitcoin-btn').disabled = false;
     document.getElementById('open-bitcoin-btn').disabled = false;
     document.getElementById('install-bitcoin-test-btn').disabled = false;
@@ -271,6 +322,7 @@ function disableAllButtons() {
     document.getElementById('connect-btn').disabled = true;
     document.getElementById('refresh-info-btn').disabled = true;
     document.getElementById('genuine-btn').disabled = true;
+    document.getElementById('check-firmware-btn').disabled = true;
     document.getElementById('install-bitcoin-btn').disabled = true;
     document.getElementById('open-bitcoin-btn').disabled = true;
     document.getElementById('install-bitcoin-test-btn').disabled = true;
