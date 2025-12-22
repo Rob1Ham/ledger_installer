@@ -62,11 +62,30 @@ We plan on releasing binaries in the future.
 ### CLI
 
 Another way of using this is the CLI, which directly hooks up into the functionalities offered by
-the Rust crate. The CLI will talk to a Ledger device connected by USB. The commands are communicated
-using an environment variable, `LEDGER_COMMAND`. Another env var lets you switch to testnet (for
-instance to install the test app), simply set `LEDGER_TESTNET` to any value.
+the Rust crate. The CLI will talk to a Ledger device connected by USB.
 
-For now those commands are implemented:
+#### Interactive Mode (TUI)
+
+Run the CLI without any environment variables to get an interactive menu:
+```
+cargo run -p ledger_manager_cli
+```
+
+This presents a menu-driven interface for all operations:
+- Get Device Info
+- Genuine Check
+- Bitcoin (Mainnet) - Install/Update/Open
+- Bitcoin Test (Testnet) - Install/Update/Open
+- Update Firmware
+- Exit
+
+#### Scripting Mode
+
+For scripting and automation, commands can be passed via environment variables.
+Set `LEDGER_COMMAND` to specify the command, and optionally set `LEDGER_TESTNET` to
+any value to use testnet variants.
+
+Available commands:
 - `getinfo`: get information (such as the list of installed apps) for your device
 - `genuinecheck`: check your Ledger device is genuine
 - `installapp`: install the Bitcoin app on your device
@@ -96,6 +115,20 @@ Querying installed applications from your Ledger. You might have to confirm on y
 Querying Ledger's remote HSM to install the app. You might have to confirm the operation on your device.
 Successfully installed the app.
 ```
+
+#### Updating firmware
+
+```
+LEDGER_COMMAND=updatefirm cargo run -p ledger_manager_cli
+```
+
+The firmware update command:
+- Checks for available firmware updates
+- Performs the complete update flow (OSU installation, MCU/bootloader flash, final firmware)
+- Repairs devices stuck in bootloader mode (connects even if device is in recovery mode)
+- Shows progress during the update
+
+**WARNING:** Do not disconnect your device during a firmware update!
 
 ## Future
 

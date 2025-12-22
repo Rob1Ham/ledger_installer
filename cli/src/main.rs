@@ -1,3 +1,6 @@
+mod menu;
+mod operations;
+
 use std::{env, process};
 
 use ledger_manager::{
@@ -18,6 +21,7 @@ macro_rules! error {
     }};
 }
 
+/// Commands available via environment variables (legacy mode).
 #[derive(Debug, Clone, Copy)]
 enum Command {
     GetInfo,
@@ -263,12 +267,14 @@ fn print_firmware_phase(phase: &FirmwareUpdatePhase) {
     }
 }
 
-fn main() {
-    let command = if let Some(cmd) = Command::get() {
-        cmd
-    } else {
-        error!("Invalid or no command specified. The command must be passed through the LEDGER_COMMAND env var. Set LEDGER_TESTNET to use the Bitcoin testnet app instead where applicable.");
-    };
+/// Run in legacy mode using environment variable commands.
+fn run_legacy_mode(command: Command) {
+    // For firmware update, we need to pass ownership of the transport
+    if matches!(command, Command::UpdateFirmware) {
+        let ledger_api = ledger_api();
+        perform_firmware_update(ledger_api);
+        return;
+    }
 
     let ledger_api = ledger_api();
     match command {
@@ -296,8 +302,21 @@ fn main() {
         Command::UpdateTestApp => {
             update_app(&ledger_api, true);
         }
-        Command::UpdateFirmware => {
-            perform_firmware_update(ledger_api);
-        }
+        Command::UpdateFirmware => unreachable!(), // Handled above
+    }
+}
+
+fn main() {
+    // Check if LEDGER_COMMAND is set for backward compatibility (legacy mode)
+    if let Some(cmd) = Command::get() {
+        run_legacy_mode(cmd);
+    } else if env::var("LEDGER_COMMAND").is_ok() {
+        // LEDGER_COMMAND was set but invalid
+        eprintln!("Invalid command specified. Valid commands: getinfo, genuinecheck, installapp, updateapp, openapp, updatefirm");
+        eprintln!("Set LEDGER_TESTNET to use the Bitcoin testnet app where applicable.");
+        process::exit(1);
+    } else {
+        // No environment variable set - run interactive mode
+        menu::run_interactive_mode();
     }
 }
