@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main, feature/interactive-menu, feature/wasm-support]
+  pull_request:
+    branches: [master, main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Install dependencies (Linux)
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+      - name: Clippy (desktop)
+        run: cargo clippy --workspace --exclude ledger_manager_web -- -D warnings
+
+  test-desktop:
+    name: Test Desktop
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - name: Build CLI
+        run: cargo build -p ledger_manager_cli --release
+
+      - name: Build GUI
+        run: cargo build -p ledger_manager_gui --release
+
+      - name: Run tests
+        run: cargo test --workspace --exclude ledger_manager_web
+
+  test-wasm:
+    name: Test WASM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Check WASM build
+        run: cargo check -p ledger_manager_web --target wasm32-unknown-unknown
+
+      - name: Build WASM package
+        run: |
+          cd web
+          wasm-pack build --target web --release

@@ -2,7 +2,6 @@ use crate::{
     ledger_service::{FirmwareInfo, LedgerListener, LedgerMessage, Version},
     theme::{self, Theme},
 };
-use ledger_manager::firmware::FirmwareUpdatePhase;
 use async_channel::{Receiver, Sender};
 use iced::{
     alignment, executor,
@@ -10,6 +9,7 @@ use iced::{
     Alignment, Application, Element, Font, Length, Renderer,
 };
 use iced_runtime::{futures::Subscription, Command};
+use ledger_manager::firmware::FirmwareUpdatePhase;
 
 const ICONEX_ICONS_BYTES: &[u8] = include_bytes!("iconex-icons.ttf");
 
@@ -25,8 +25,10 @@ pub enum Message {
 
     UpdateMain,
     InstallMain,
+    OpenMain,
     UpdateTest,
     InstallTest,
+    OpenTest,
     #[allow(unused)]
     Connect,
     GenuineCheck,
@@ -189,6 +191,14 @@ impl Application for LedgerInstaller {
                 self.test_app_version = Version::None;
                 self.device_busy = true;
                 self.send_ledger_msg(LedgerMessage::InstallTest)
+            }
+            Message::OpenMain => {
+                self.device_busy = true;
+                self.send_ledger_msg(LedgerMessage::OpenMain)
+            }
+            Message::OpenTest => {
+                self.device_busy = true;
+                self.send_ledger_msg(LedgerMessage::OpenTest)
             }
             Message::GenuineCheck => {
                 self.device_busy = true;
@@ -445,6 +455,7 @@ fn apps_container<'a>(
         latest: &Version,
         install_msg: Option<Message>,
         update_msg: Option<Message>,
+        open_msg: Option<Message>,
     ) -> Container<'static, Message, Theme> {
         match (version, latest) {
             (Version::NotInstalled, _) => Container::new(raw_btn(" Install ", install_msg)),
@@ -452,9 +463,19 @@ fn apps_container<'a>(
                 // FIXME: Here we only check if installed version differ from `latest` in Ledger catalog(stable), so if
                 //     //  user have an `alpha` version installed we still offer him to `update` to the `stable` version
                 if version != latest {
-                    Container::new(raw_btn(" Update ", update_msg))
+                    Container::new(
+                        Row::new()
+                            .push(raw_btn(" Update ", update_msg))
+                            .push(Space::with_width(10))
+                            .push(raw_btn(" Open ", open_msg)),
+                    )
                 } else {
-                    Container::new(Text::new("Latest").size(25))
+                    Container::new(
+                        Row::new()
+                            .push(Text::new("Latest").size(25))
+                            .push(Space::with_width(15))
+                            .push(raw_btn(" Open ", open_msg)),
+                    )
                 }
             }
             _ => Container::new(Text::new(" - ").size(25)),
@@ -480,6 +501,11 @@ fn apps_container<'a>(
     } else {
         None
     };
+    let open_bitcoin_msg = if !device_busy {
+        Some(Message::OpenMain)
+    } else {
+        None
+    };
     let install_test_msg = if !device_busy {
         Some(Message::InstallTest)
     } else {
@@ -490,12 +516,18 @@ fn apps_container<'a>(
     } else {
         None
     };
+    let open_test_msg = if !device_busy {
+        Some(Message::OpenTest)
+    } else {
+        None
+    };
 
     let bitcoin_button = btn(
         &bitcoin_version,
         &bitcoin_latest,
         install_bitcoin_msg,
         update_bitcoin_msg,
+        open_bitcoin_msg,
     );
 
     let test_button = btn(
@@ -503,6 +535,7 @@ fn apps_container<'a>(
         &test_latest,
         install_test_msg,
         update_test_msg,
+        open_test_msg,
     );
 
     let bitcoin_version = version(bitcoin_version);

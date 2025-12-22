@@ -209,7 +209,9 @@ pub fn run_interactive_mode() {
                 println!();
                 println!(
                     "{}",
-                    style("WARNING: Do NOT disconnect your device during the update!").red().bold()
+                    style("WARNING: Do NOT disconnect your device during the update!")
+                        .red()
+                        .bold()
                 );
                 println!(
                     "{}",

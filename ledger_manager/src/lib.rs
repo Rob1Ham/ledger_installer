@@ -7,14 +7,21 @@
 //! # Features
 //!
 //! - `desktop` (default): Native USB HID transport via `ledger-transport-hidapi`
+//! - `web`: WebHID transport for browser/WASM environments
 
 pub mod firmware;
 
+// Transport abstraction layer
+pub mod transport;
+
 pub use ledger_apdu;
+
+#[cfg(feature = "desktop")]
 pub use ledger_transport_hidapi;
 
 use form_urlencoded::Serializer as UrlSerializer;
 use ledger_apdu::APDUCommand;
+#[cfg(feature = "desktop")]
 use ledger_transport_hidapi::TransportNativeHID;
 use serde_derive::Deserialize;
 
@@ -128,6 +135,7 @@ pub struct DeviceInfo {
     pub mcu_version: Option<String>,
 }
 
+#[cfg(feature = "desktop")]
 impl DeviceInfo {
     /// Query information about this device.
     ///
@@ -305,6 +313,7 @@ pub(crate) fn deser_apdu_command(
 /// opening a socket so a remote server communicates directly with the Ledger. It appears to be
 /// talking to an HSM up there which would manage sensitive actions.
 /// Parameters are passed directly in the url. Don't forget to escape the necessary characters!
+#[cfg(feature = "desktop")]
 pub fn query_via_websocket(
     ledger_api: &TransportNativeHID,
     url: &str,
@@ -403,6 +412,7 @@ pub fn query_via_websocket(
 }
 
 /// Get a list of applications installed on this device.
+#[cfg(feature = "desktop")]
 pub fn list_installed_apps_raw(
     ledger_api: &TransportNativeHID,
 ) -> Result<Vec<InstalledApp>, Box<dyn error::Error>> {
@@ -461,6 +471,7 @@ pub fn list_installed_apps_raw(
 
 /// Get the metadata of the applications installed on the device. This calls the Ledger API, to
 /// only query the data available from the device see `list_installed_apps_raw`.
+#[cfg(feature = "desktop")]
 pub fn list_installed_apps(
     ledger_api: &TransportNativeHID,
 ) -> Result<Vec<Option<BitcoinAppInfo>>, Box<dyn error::Error>> {
@@ -475,6 +486,7 @@ pub fn list_installed_apps(
 }
 
 /// Get the installed Bitcoin app, if any. Set `is_testnet` to look for the testnet Bitcoin app.
+#[cfg(feature = "desktop")]
 pub fn bitcoin_app_installed(
     ledger_api: &TransportNativeHID,
     is_testnet: bool,
@@ -490,6 +502,7 @@ pub fn bitcoin_app_installed(
 }
 
 /// Whether the Bitcoin app is installed on this device.
+#[cfg(feature = "desktop")]
 pub fn is_bitcoin_app_installed(
     ledger_api: &TransportNativeHID,
     is_testnet: bool,
@@ -507,6 +520,7 @@ pub struct FirmwareInfo {
     pub perso: String,
 }
 
+#[cfg(feature = "desktop")]
 impl FirmwareInfo {
     pub fn from_device(device_info: &DeviceInfo) -> Self {
         let dev_ver_resp = minreq::Request::new(
@@ -560,6 +574,7 @@ pub struct BitcoinAppInfo {
 // Returns a Vec of Options as some elements in the response's JSON array may be `null`.
 /// Get metadata about a list of Bitcoin apps identified by their hash. Elements returned seem to
 /// be in the same order as the hashes, with `None` for not found.
+#[cfg(feature = "desktop")]
 pub fn bitcoin_apps_by_hashes(
     hashes: Vec<Vec<u8>>,
 ) -> Result<Vec<Option<BitcoinAppInfo>>, Box<dyn error::Error>> {
@@ -584,6 +599,7 @@ pub fn bitcoin_apps_by_hashes(
 // - https://github.com/LedgerHQ/ledger-live/blob/5a0a1aa5dc183116839851b79bceb6704f1de4b9/libs/device-core/src/managerApi/repositories/HttpManagerApiRepository.ts#L211
 // There is also another way which seems to be the API v1 way of getting the app info. See
 // https://github.com/LedgerHQ/ledger-live/blob/99879eb5bada1ecaea7a02d8886e16b44657af6d/libs/ledger-live-common/src/manager/index.ts#L103-L104.
+#[cfg(feature = "desktop")]
 pub fn get_latest_apps(
     device_info: &DeviceInfo,
 ) -> Result<(Option<BitcoinAppInfo>, Option<BitcoinAppInfo>), Box<dyn error::Error>> {
@@ -616,6 +632,7 @@ pub fn get_latest_apps(
 
 /// Get the Bitcoin app information for this device from the "catalog" (as Ledger Live calls it).
 /// Set `is_testnet` to `true` to get the Test app instead.
+#[cfg(feature = "desktop")]
 pub fn bitcoin_latest_app(
     device_info: &DeviceInfo,
     is_testnet: bool,
@@ -625,6 +642,7 @@ pub fn bitcoin_latest_app(
 }
 
 /// Open the given application on the device.
+#[cfg(feature = "desktop")]
 pub fn open_bitcoin_app(
     ledger_api: &TransportNativeHID,
     is_testnet: bool,
@@ -645,6 +663,7 @@ pub fn open_bitcoin_app(
 }
 
 /// Check whether the Ledger device is genuine.
+#[cfg(feature = "desktop")]
 pub fn genuine_check(ledger_api: &TransportNativeHID) -> Result<(), Box<dyn error::Error>> {
     let device_info = DeviceInfo::new(ledger_api)?;
     let firmware_info = FirmwareInfo::from_device(&device_info);
@@ -666,6 +685,7 @@ pub enum InstallErr {
     Any(Box<dyn error::Error>),
 }
 
+#[cfg(feature = "desktop")]
 fn install_app(
     ledger_api: &TransportNativeHID,
     device_info: &DeviceInfo,
@@ -685,6 +705,7 @@ fn install_app(
 
 /// Install the Bitcoin application on this device. Set `is_testnet` to `true` to install the
 /// testnet app instead.
+#[cfg(feature = "desktop")]
 pub fn install_bitcoin_app(
     ledger_api: &TransportNativeHID,
     is_testnet: bool,
@@ -720,6 +741,7 @@ pub enum UpdateErr {
 
 /// Update the Bitcoin application on this device. Set `is_testnet` to `true` to install the
 /// testnet app instead.
+#[cfg(feature = "desktop")]
 pub fn update_bitcoin_app(
     ledger_api: &TransportNativeHID,
     is_testnet: bool,

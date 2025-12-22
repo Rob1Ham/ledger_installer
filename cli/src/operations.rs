@@ -5,8 +5,8 @@
 
 use ledger_manager::{
     firmware::{
-        get_latest_firmware_for_device, repair_device_in_bootloader_with_reconnect, update_firmware,
-        FirmwareUpdatePhase,
+        get_latest_firmware_for_device, repair_device_in_bootloader_with_reconnect,
+        update_firmware, FirmwareUpdatePhase,
     },
     genuine_check, install_bitcoin_app,
     ledger_transport_hidapi::{hidapi::HidApi, TransportNativeHID},

@@ -6,3 +6,9 @@ resolver = "2"
 edition = "2021"
 license-file = "LICENCE"
 readme = "README.md"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

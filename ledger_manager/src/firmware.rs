@@ -541,15 +541,16 @@ pub fn get_latest_firmware_for_device(
     let device_version = get_device_version_from_api(device_info.target_id)?;
 
     // 2. Get current firmware version ID
-    let current_fw_id = match get_current_firmware_version_id(device_version.id, &device_info.version) {
-        Ok(id) => id,
-        Err(e) => {
-            // If we can't get the current firmware ID, the device might have a
-            // version that's not in the API database (e.g., very new or dev firmware)
-            log::warn!("Could not get current firmware version ID: {}", e);
-            return Ok(None);
-        }
-    };
+    let current_fw_id =
+        match get_current_firmware_version_id(device_version.id, &device_info.version) {
+            Ok(id) => id,
+            Err(e) => {
+                // If we can't get the current firmware ID, the device might have a
+                // version that's not in the API database (e.g., very new or dev firmware)
+                log::warn!("Could not get current firmware version ID: {}", e);
+                return Ok(None);
+            }
+        };
 
     // 3. Check for latest firmware
     let osu = match get_latest_firmware_from_api(current_fw_id, device_version.id)? {
@@ -1257,11 +1258,7 @@ fn find_mcu_for_repair(
             .collect();
 
         for mcu in &mcus {
-            let mcu_parts: Vec<u32> = mcu
-                .name
-                .split('.')
-                .filter_map(|s| s.parse().ok())
-                .collect();
+            let mcu_parts: Vec<u32> = mcu.name.split('.').filter_map(|s| s.parse().ok()).collect();
 
             if mcu_parts.len() >= 2 && bl_parts.len() >= 2 {
                 // Try MCU versions that are higher than current bootloader
@@ -1287,9 +1284,7 @@ fn find_mcu_for_repair(
             let b_parts: Vec<u32> = b.name.split('.').filter_map(|s| s.parse().ok()).collect();
             a_parts.cmp(&b_parts)
         })
-        .ok_or_else(|| {
-            FirmwareUpdateError::Other("No compatible MCU found".to_string())
-        })?;
+        .ok_or_else(|| FirmwareUpdateError::Other("No compatible MCU found".to_string()))?;
 
     Ok(best_mcu.name.clone())
 }
@@ -1488,10 +1483,7 @@ where
 
     let result = query_via_websocket_with_progress(ledger_api, &url, |event| {
         match event {
-            WebSocketEvent::BulkProgress {
-                progress,
-                ..
-            } => {
+            WebSocketEvent::BulkProgress { progress, .. } => {
                 // Store progress as integer percentage (0-100)
                 last_progress.store((progress * 100.0) as u32, Ordering::SeqCst);
                 progress_callback(FirmwareUpdatePhase::FlashingMcu {
