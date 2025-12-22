@@ -387,7 +387,7 @@ fn apps_container<'a>(
     // It looks weird that we load iconex-icons.ttf by its name: Untitled1
     const ICONEX_ICONS: Font = Font::with_name("Untitled1");
 
-    fn raw_btn(txt: &str, msg: Option<Message>) -> Button<Message, Theme> {
+    fn raw_btn(txt: &str, msg: Option<Message>) -> Button<'_, Message, Theme> {
         Button::new(
             Row::new()
                 .push(
