@@ -115,14 +115,14 @@ function displayDeviceInfo(info) {
         return;
     }
 
-    container.innerHTML = `
-        <dl>
-            <dt>Model</dt>
-            <dd>${info.model || 'Unknown'}</dd>
-            <dt>Firmware</dt>
-            <dd>${info.version || 'Unknown'}</dd>
-        </dl>
-    `;
+    let html = '<dl>';
+    html += `<dt>Model</dt><dd>${info.model || 'Unknown'}</dd>`;
+    html += `<dt>Firmware</dt><dd>${info.version || 'Unknown'}</dd>`;
+    if (info.mcu_version) {
+        html += `<dt>MCU</dt><dd>${info.mcu_version}</dd>`;
+    }
+    html += '</dl>';
+    container.innerHTML = html;
 }
 
 // Update app status displays
