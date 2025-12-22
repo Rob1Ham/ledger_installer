@@ -27,7 +27,9 @@ pub const MAX_MCU_ITERATIONS: u32 = 5;
 /// for receiving the final firmware.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OsuFirmware {
+    #[serde(default)]
     pub id: i64,
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
@@ -35,9 +37,13 @@ pub struct OsuFirmware {
     pub display_name: Option<String>,
     #[serde(default)]
     pub notes: Option<String>,
+    #[serde(default)]
     pub perso: String,
+    #[serde(default)]
     pub firmware: String,
+    #[serde(default)]
     pub firmware_key: String,
+    #[serde(default)]
     pub hash: String,
     #[serde(default)]
     pub date_creation: String,
@@ -48,6 +54,7 @@ pub struct OsuFirmware {
     #[serde(default)]
     pub providers: Vec<i64>,
     /// ID of the final firmware that will be installed after this OSU.
+    #[serde(default)]
     pub next_se_firmware_final_version: i64,
     /// IDs of firmware versions that can upgrade to this OSU.
     #[serde(default)]
