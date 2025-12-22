@@ -541,16 +541,45 @@ pub fn get_latest_firmware_for_device(
     let device_version = get_device_version_from_api(device_info.target_id)?;
 
     // 2. Get current firmware version ID
-    let current_fw_id = get_current_firmware_version_id(device_version.id, &device_info.version)?;
+    let current_fw_id = match get_current_firmware_version_id(device_version.id, &device_info.version) {
+        Ok(id) => id,
+        Err(e) => {
+            // If we can't get the current firmware ID, the device might have a
+            // version that's not in the API database (e.g., very new or dev firmware)
+            log::warn!("Could not get current firmware version ID: {}", e);
+            return Ok(None);
+        }
+    };
 
     // 3. Check for latest firmware
     let osu = match get_latest_firmware_from_api(current_fw_id, device_version.id)? {
-        Some(osu) => osu,
+        Some(osu) => {
+            // Verify the OSU has valid data (non-zero next firmware ID)
+            if osu.next_se_firmware_final_version == 0 {
+                log::info!("OSU has no next firmware version, device is up to date");
+                return Ok(None);
+            }
+            osu
+        }
         None => return Ok(None), // Already up to date
     };
 
     // 4. Get final firmware info
-    let final_firmware = get_final_firmware_by_id(osu.next_se_firmware_final_version)?;
+    let final_firmware = match get_final_firmware_by_id(osu.next_se_firmware_final_version) {
+        Ok(fw) => fw,
+        Err(e) => {
+            // If we can't parse the final firmware, it might have null fields
+            // indicating no valid update is available
+            log::warn!("Could not get final firmware info: {}", e);
+            return Ok(None);
+        }
+    };
+
+    // Verify the final firmware has valid version info
+    if final_firmware.version.is_empty() {
+        log::info!("Final firmware has no version, device is up to date");
+        return Ok(None);
+    }
 
     // 5. Check if MCU needs flashing
     let mcus = get_all_mcu_versions()?;
