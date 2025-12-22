@@ -1,6 +1,10 @@
 use std::{env, process};
 
 use ledger_manager::{
+    firmware::{
+        get_latest_firmware_for_device, repair_device_in_bootloader, update_firmware,
+        FirmwareUpdatePhase,
+    },
     genuine_check, install_bitcoin_app,
     ledger_transport_hidapi::{hidapi::HidApi, TransportNativeHID},
     list_installed_apps, open_bitcoin_app, update_bitcoin_app, DeviceInfo, InstallErr, UpdateErr,
@@ -136,6 +140,98 @@ fn open_app(ledger_api: &TransportNativeHID, is_testnet: bool) {
     }
 }
 
+fn perform_firmware_update(ledger_api: &TransportNativeHID) {
+    let device_info = device_info(ledger_api);
+
+    // Check if device is in bootloader mode (repair mode)
+    if device_info.is_bootloader {
+        println!("Device is in bootloader mode. Attempting repair...");
+        println!("You may need to confirm operations on your device.");
+
+        match repair_device_in_bootloader(ledger_api, |phase| {
+            print_firmware_phase(&phase);
+        }) {
+            Ok(()) => println!("\nDevice repaired successfully!"),
+            Err(e) => error!("\nRepair failed: {}", e),
+        }
+        return;
+    }
+
+    // Check for firmware updates
+    println!("Checking for firmware updates...");
+    let update_context = match get_latest_firmware_for_device(&device_info) {
+        Ok(Some(ctx)) => ctx,
+        Ok(None) => {
+            println!(
+                "Firmware is already up to date (version {}).",
+                device_info.version
+            );
+            return;
+        }
+        Err(e) => error!("Error checking for updates: {}", e),
+    };
+
+    println!(
+        "Update available: {} -> {}",
+        device_info.version, update_context.final_firmware.version
+    );
+    println!("OSU: {}", update_context.osu.name);
+    if update_context.should_flash_mcu {
+        println!("Note: MCU will also be updated (device will reboot multiple times).");
+    }
+    println!();
+    println!("You may need to confirm operations on your device.");
+    println!("DO NOT disconnect your device during the update!");
+    println!();
+
+    // Perform the update
+    match update_firmware(ledger_api, &update_context, |phase| {
+        print_firmware_phase(&phase);
+    }) {
+        Ok(()) => println!("\nFirmware updated successfully!"),
+        Err(e) => error!("\nFirmware update failed: {}", e),
+    }
+}
+
+fn print_firmware_phase(phase: &FirmwareUpdatePhase) {
+    match phase {
+        FirmwareUpdatePhase::CheckingForUpdates => {
+            println!("Checking for updates...");
+        }
+        FirmwareUpdatePhase::DownloadingMetadata => {
+            println!("Downloading firmware metadata...");
+        }
+        FirmwareUpdatePhase::InstallingOsu { progress } => {
+            print!("\rInstalling OSU: {:>5.1}%", progress * 100.0);
+            std::io::Write::flush(&mut std::io::stdout()).ok();
+        }
+        FirmwareUpdatePhase::WaitingForBootloader => {
+            println!("\nWaiting for device to reboot into bootloader...");
+        }
+        FirmwareUpdatePhase::FlashingMcu {
+            iteration,
+            progress,
+        } => {
+            print!(
+                "\rFlashing MCU ({}/5): {:>5.1}%",
+                iteration,
+                progress * 100.0
+            );
+            std::io::Write::flush(&mut std::io::stdout()).ok();
+        }
+        FirmwareUpdatePhase::InstallingFinalFirmware { progress } => {
+            print!("\rInstalling final firmware: {:>5.1}%", progress * 100.0);
+            std::io::Write::flush(&mut std::io::stdout()).ok();
+        }
+        FirmwareUpdatePhase::Completed => {
+            println!("\nUpdate completed!");
+        }
+        FirmwareUpdatePhase::Failed { error } => {
+            println!("\nUpdate failed: {}", error);
+        }
+    }
+}
+
 fn main() {
     let command = if let Some(cmd) = Command::get() {
         cmd
@@ -170,7 +266,7 @@ fn main() {
             update_app(&ledger_api, true);
         }
         Command::UpdateFirmware => {
-            unimplemented!()
+            perform_firmware_update(&ledger_api);
         }
     }
 }
