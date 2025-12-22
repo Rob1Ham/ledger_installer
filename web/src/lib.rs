@@ -587,7 +587,7 @@ async fn get_bitcoin_app_info(
     let app_name = if testnet { "bitcoin test" } else { "bitcoin" };
     apps.into_iter()
         .find(|app| app.version_name.to_lowercase() == app_name)
-        .ok_or_else(|| format!("Bitcoin app not found for this device"))
+        .ok_or_else(|| "Bitcoin app not found for this device".to_string())
 }
 
 /// Execute WebSocket communication with Ledger HSM

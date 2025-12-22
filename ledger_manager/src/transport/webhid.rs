@@ -96,7 +96,7 @@ impl WebHidTransport {
                 Err(_) => continue,
             };
 
-            if device.vendor_id() == LEDGER_VENDOR_ID.into() {
+            if device.vendor_id() == LEDGER_VENDOR_ID {
                 return Self::from_device(device).await;
             }
         }
@@ -211,11 +211,9 @@ impl WebHidTransport {
 
         // Serialize the APDU command
         let mut data = vec![command.cla, command.ins, command.p1, command.p2];
-        if !command.data.is_empty() || true {
-            // Always include Lc byte
-            data.push(command.data.len() as u8);
-            data.extend_from_slice(&command.data);
-        }
+        // Always include Lc byte
+        data.push(command.data.len() as u8);
+        data.extend_from_slice(&command.data);
 
         // Frame and send
         let packets = frame_apdu(&data, self.channel_id);
@@ -229,8 +227,8 @@ impl WebHidTransport {
         full_response.push((sw >> 8) as u8);
         full_response.push(sw as u8);
 
-        Ok(APDUAnswer::from_answer(full_response)
-            .map_err(|e| TransportError::ProtocolError(ApduError::FramingError(e.to_string())))?)
+        APDUAnswer::from_answer(full_response)
+            .map_err(|e| TransportError::ProtocolError(ApduError::FramingError(e.to_string())))
     }
 
     /// Check if the device is still connected.
@@ -249,7 +247,7 @@ impl WebHidTransport {
 }
 
 impl LedgerTransport for WebHidTransport {
-    fn exchange(&self, command: &APDUCommand<Vec<u8>>) -> TransportResult<APDUAnswer<Vec<u8>>> {
+    fn exchange(&self, _command: &APDUCommand<Vec<u8>>) -> TransportResult<APDUAnswer<Vec<u8>>> {
         // Note: This is a blocking wrapper around the async exchange.
         // In WASM, you should prefer using exchange_async directly.
         // This implementation uses wasm_bindgen_futures to block.

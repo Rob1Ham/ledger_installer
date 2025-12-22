@@ -85,6 +85,7 @@ Available commands:
 - `installapp`: install the Bitcoin app on your device
 - `updateapp`: update the Bitcoin app on your device
 - `openapp`: open the Bitcoin app on your device
+- `updatefirm`: update the device firmware (also repairs devices stuck in bootloader mode)
 
 ### Examples
 
@@ -103,6 +104,7 @@ cargo run -p ledger_manager_cli
   Genuine Check
   Bitcoin (Mainnet)
   Bitcoin Test (Testnet)
+  Update Firmware
   Exit
 ```
 
@@ -127,11 +129,23 @@ Querying Ledger's remote HSM to install the app. You might have to confirm the o
 Successfully installed the app.
 ```
 
+#### Updating firmware
+
+```
+LEDGER_COMMAND=updatefirm cargo run -p ledger_manager_cli
+```
+
+The firmware update command:
+- Checks for available firmware updates
+- Performs the complete update flow (OSU installation, MCU/bootloader flash, final firmware)
+- Repairs devices stuck in bootloader mode (connects even if device is in recovery mode)
+- Shows progress during the update
+
+**WARNING:** Do not disconnect your device during a firmware update!
+
 ## Future
 
 We are looking into people to help test this and confirm it works in as many scenarii as possible.
-
-We are probably going to have to introduce an `upgradefirmware` command.
 
 Contributions welcome! If you are interested, get in touch on the [Liana
 Discord](https://discord.gg/QJUp67zSN4).
