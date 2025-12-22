@@ -2,7 +2,7 @@ use std::{env, process};
 
 use ledger_manager::{
     firmware::{
-        get_latest_firmware_for_device, repair_device_in_bootloader, update_firmware,
+        get_latest_firmware_for_device, repair_device_in_bootloader_with_reconnect, update_firmware,
         FirmwareUpdatePhase,
     },
     genuine_check, install_bitcoin_app,
@@ -140,15 +140,40 @@ fn open_app(ledger_api: &TransportNativeHID, is_testnet: bool) {
     }
 }
 
-fn perform_firmware_update(ledger_api: &TransportNativeHID) {
-    let device_info = device_info(ledger_api);
+/// Create a new HID API and transport connection to the Ledger device.
+/// This is used for reconnection after device reboots.
+fn create_transport() -> Result<TransportNativeHID, Box<dyn std::error::Error>> {
+    // Create HidApi in a Box to ensure it lives long enough
+    // The TransportNativeHID opens and owns the HidDevice, so HidApi
+    // can be dropped after the device is opened.
+    let hid_api = Box::new(HidApi::new()?);
+    let transport = TransportNativeHID::new(&hid_api)?;
+    // hid_api is dropped here, but the HidDevice inside transport is already open
+    Ok(transport)
+}
+
+fn perform_firmware_update(ledger_api: TransportNativeHID) {
+    // Get device info with the passed transport
+    let device_info = match DeviceInfo::new(&ledger_api) {
+        Ok(info) => info,
+        Err(e) => error!("Error fetching device info: {}", e),
+    };
+
+    // Drop the transport to free the HID device handle BEFORE we try to create new connections
+    // This is critical because HID devices typically only allow one open handle at a time
+    drop(ledger_api);
 
     // Check if device is in bootloader mode (repair mode)
     if device_info.is_bootloader {
         println!("Device is in bootloader mode. Attempting repair...");
+        println!("  Target ID: {:#x}", device_info.target_id);
+        println!("  SE Target ID: {:#x}", device_info.se_target_id);
+        println!("  Bootloader Version: {}", device_info.version);
+        println!("  MCU Version: {:?}", device_info.mcu_version);
         println!("You may need to confirm operations on your device.");
 
-        match repair_device_in_bootloader(ledger_api, |phase| {
+        // Use the reconnect-capable repair function since device will reboot
+        match repair_device_in_bootloader_with_reconnect(create_transport, |phase| {
             print_firmware_phase(&phase);
         }) {
             Ok(()) => println!("\nDevice repaired successfully!"),
@@ -184,8 +209,14 @@ fn perform_firmware_update(ledger_api: &TransportNativeHID) {
     println!("DO NOT disconnect your device during the update!");
     println!();
 
+    // Create a fresh transport for the update
+    let update_transport = match create_transport() {
+        Ok(t) => t,
+        Err(e) => error!("Error connecting to Ledger device: {}", e),
+    };
+
     // Perform the update
-    match update_firmware(ledger_api, &update_context, |phase| {
+    match update_firmware(&update_transport, &update_context, |phase| {
         print_firmware_phase(&phase);
     }) {
         Ok(()) => println!("\nFirmware updated successfully!"),
@@ -266,7 +297,7 @@ fn main() {
             update_app(&ledger_api, true);
         }
         Command::UpdateFirmware => {
-            perform_firmware_update(&ledger_api);
+            perform_firmware_update(ledger_api);
         }
     }
 }
