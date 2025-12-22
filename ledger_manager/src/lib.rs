@@ -3,6 +3,12 @@
 //! This implements utility functions to manage the applications installed on your Ledger device.
 //! This is performed by both talking to the Ledger device connected by USB but also by making HTTP
 //! request to the Ledger API used by Ledger Live.
+//!
+//! # Features
+//!
+//! - `desktop` (default): Native USB HID transport via `ledger-transport-hidapi`
+
+pub mod firmware;
 
 pub use ledger_apdu;
 pub use ledger_transport_hidapi;
@@ -261,19 +267,21 @@ pub struct InstalledApp {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
-enum HsmMessageData {
+pub(crate) enum HsmMessageData {
     Command(String),
     CommandList(Vec<String>),
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct HsmMessage {
+pub(crate) struct HsmMessage {
     pub query: String,
     pub nonce: u32,
     pub data: Option<HsmMessageData>,
 }
 
-fn deser_apdu_command(hex_str: &str) -> Result<APDUCommand<Vec<u8>>, Box<dyn error::Error>> {
+pub(crate) fn deser_apdu_command(
+    hex_str: &str,
+) -> Result<APDUCommand<Vec<u8>>, Box<dyn error::Error>> {
     let bytes = hex::decode(hex_str)?;
     if bytes.len() < 5 {
         return Err("Invalid command".into());
@@ -503,7 +511,7 @@ impl FirmwareInfo {
     pub fn from_device(device_info: &DeviceInfo) -> Self {
         let dev_ver_resp = minreq::Request::new(
             minreq::Method::Post,
-            &format!("{}/get_device_version", BASE_API_V1_URL),
+            format!("{}/get_device_version", BASE_API_V1_URL),
         )
         .with_param("livecommonversion", LIVE_COMMON_VERSION)
         .with_json(&serde_json::json!({
@@ -517,7 +525,7 @@ impl FirmwareInfo {
 
         let firm_resp = minreq::Request::new(
             minreq::Method::Post,
-            &format!("{}/get_firmware_version", BASE_API_V1_URL),
+            format!("{}/get_firmware_version", BASE_API_V1_URL),
         )
         .with_param("livecommonversion", LIVE_COMMON_VERSION)
         .with_json(&serde_json::json!({
