@@ -30,7 +30,7 @@ async fn main() {
     let icon = icon::from_file_data(ICON, None).unwrap();
 
     let mut settings = Settings::with_flags(flags);
-    settings.window.size = Size::new(500.0, 450.0);
+    settings.window.size = Size::new(500.0, 550.0);
     settings.window.resizable = false;
     settings.window.icon = Some(icon);
 

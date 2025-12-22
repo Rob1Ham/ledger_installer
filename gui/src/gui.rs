@@ -61,6 +61,8 @@ pub struct LedgerInstaller {
     alarm: bool,
     firmware_update_info: Option<FirmwareInfo>,
     firmware_update_progress: Option<FirmwareUpdatePhase>,
+    firmware_checked: bool,
+    firmware_current_version: Option<String>,
 }
 
 impl LedgerInstaller {
@@ -93,6 +95,8 @@ impl Application for LedgerInstaller {
             alarm: false,
             firmware_update_info: None,
             firmware_update_progress: None,
+            firmware_checked: false,
+            firmware_current_version: None,
         };
 
         let cmd = iced::font::load(ICONEX_ICONS_BYTES).map(Message::from);
@@ -114,6 +118,14 @@ impl Application for LedgerInstaller {
                         self.main_latest_version = Version::None;
                         self.test_app_version = Version::None;
                         self.test_latest_version = Version::None;
+                        // Reset firmware state when device disconnects
+                        self.firmware_checked = false;
+                        self.firmware_current_version = None;
+                        self.firmware_update_info = None;
+                        self.firmware_update_progress = None;
+                    } else {
+                        // Capture the current firmware version from device
+                        self.firmware_current_version = version.clone();
                     }
                     self.ledger_model = model;
                     self.ledger_version = version;
@@ -147,6 +159,10 @@ impl Application for LedgerInstaller {
                     self.test_latest_version = test;
                 }
                 LedgerMessage::FirmwareUpdateAvailable(info) => {
+                    self.firmware_checked = true;
+                    if let Some(ref fw_info) = info {
+                        self.firmware_current_version = Some(fw_info.current_version.clone());
+                    }
                     self.firmware_update_info = info;
                     self.device_busy = false;
                 }
@@ -245,7 +261,39 @@ impl Application for LedgerInstaller {
             self.firmware_update_info.clone(),
             self.firmware_update_progress.clone(),
             self.device_busy,
+            self.firmware_checked,
+            self.firmware_current_version.clone(),
         );
+
+        // Create the prominent Update Firmware button
+        // If update is available, clicking performs the update; otherwise it checks for updates
+        let (btn_text, update_firmware_btn_msg) = if self.firmware_update_info.is_some() {
+            (
+                "Update Firmware",
+                if !self.device_busy {
+                    Some(Message::UpdateFirmware)
+                } else {
+                    None
+                },
+            )
+        } else {
+            (
+                "Check for Firmware Updates",
+                if !self.device_busy {
+                    Some(Message::CheckFirmwareUpdate)
+                } else {
+                    None
+                },
+            )
+        };
+        let update_firmware_button = Button::new(
+            Text::new(btn_text)
+                .size(20)
+                .horizontal_alignment(alignment::Horizontal::Center),
+        )
+        .style(theme::Button::Prominent)
+        .padding([12, 30])
+        .on_press_maybe(update_firmware_btn_msg);
 
         let app = if display_app {
             Some(
@@ -275,7 +323,14 @@ impl Application for LedgerInstaller {
                             .push(Space::with_width(Length::Fill)),
                     )
                     .push(Space::with_height(5))
-                    .push(firmware),
+                    .push(firmware)
+                    .push(Space::with_height(15))
+                    .push(
+                        Row::new()
+                            .push(Space::with_width(Length::Fill))
+                            .push(update_firmware_button)
+                            .push(Space::with_width(Length::Fill)),
+                    ),
             )
         } else {
             None
@@ -613,82 +668,55 @@ fn apps_container<'a>(
 fn firmware_container<'a>(
     update_info: Option<FirmwareInfo>,
     progress: Option<FirmwareUpdatePhase>,
-    device_busy: bool,
+    _device_busy: bool,
+    firmware_checked: bool,
+    current_version: Option<String>,
 ) -> Container<'a, Message, Theme, Renderer> {
     let first_column_offset = 80;
     let first_column_width = 150;
 
-    // Build progress status text
-    let progress_text = progress.as_ref().map(|phase| match phase {
-        FirmwareUpdatePhase::CheckingForUpdates => "Checking for updates...".to_string(),
-        FirmwareUpdatePhase::DownloadingMetadata => "Downloading metadata...".to_string(),
-        FirmwareUpdatePhase::InstallingOsu { progress } => {
-            format!("Installing OSU: {:.1}%", progress * 100.0)
+    // Build progress/status text
+    let status_text = if let Some(phase) = &progress {
+        match phase {
+            FirmwareUpdatePhase::CheckingForUpdates => "Checking for updates...".to_string(),
+            FirmwareUpdatePhase::DownloadingMetadata => "Downloading metadata...".to_string(),
+            FirmwareUpdatePhase::InstallingOsu { progress } => {
+                format!("Installing OSU: {:.1}%", progress * 100.0)
+            }
+            FirmwareUpdatePhase::WaitingForBootloader => "Waiting for bootloader...".to_string(),
+            FirmwareUpdatePhase::FlashingMcu {
+                iteration,
+                progress,
+            } => format!("Flashing MCU ({}/5): {:.1}%", iteration, progress * 100.0),
+            FirmwareUpdatePhase::InstallingFinalFirmware { progress } => {
+                format!("Installing firmware: {:.1}%", progress * 100.0)
+            }
+            FirmwareUpdatePhase::Completed => "Update complete!".to_string(),
+            FirmwareUpdatePhase::Failed { error } => format!("Failed: {}", error),
         }
-        FirmwareUpdatePhase::WaitingForBootloader => "Waiting for bootloader...".to_string(),
-        FirmwareUpdatePhase::FlashingMcu {
-            iteration,
-            progress,
-        } => format!("Flashing MCU ({}/5): {:.1}%", iteration, progress * 100.0),
-        FirmwareUpdatePhase::InstallingFinalFirmware { progress } => {
-            format!("Installing firmware: {:.1}%", progress * 100.0)
+    } else if let Some(info) = &update_info {
+        format!(
+            "Update available: {} -> {}",
+            info.current_version, info.target_version
+        )
+    } else if firmware_checked {
+        // Firmware check was performed but no update available
+        if let Some(version) = current_version {
+            format!("Up to date ({})", version)
+        } else {
+            "Up to date".to_string()
         }
-        FirmwareUpdatePhase::Completed => "Update complete!".to_string(),
-        FirmwareUpdatePhase::Failed { error } => format!("Failed: {}", error),
-    });
-
-    // Determine what buttons/status to show
-    let (status_text, action_button) = match (&update_info, &progress) {
-        // Ongoing update - show progress
-        (_, Some(phase))
-            if !matches!(
-                phase,
-                FirmwareUpdatePhase::Completed | FirmwareUpdatePhase::Failed { .. }
-            ) =>
-        {
-            (progress_text.unwrap_or_default(), None)
-        }
-        // Update available - show info and update button
-        (Some(info), _) => {
-            let status = format!("{} -> {}", info.current_version, info.target_version);
-            let btn_msg = if !device_busy {
-                Some(Message::UpdateFirmware)
-            } else {
-                None
-            };
-            let btn = Button::new(" Update ").on_press_maybe(btn_msg);
-            (status, Some(btn))
-        }
-        // No update info - show check button
-        (None, _) => {
-            let status = progress_text.unwrap_or_else(|| "Not checked".to_string());
-            let btn_msg = if !device_busy {
-                Some(Message::CheckFirmwareUpdate)
-            } else {
-                None
-            };
-            let btn = Button::new(" Check for Updates ").on_press_maybe(btn_msg);
-            (status, Some(btn))
-        }
+    } else {
+        "Not checked".to_string()
     };
 
     Container::new(
-        Column::new()
-            .push(
-                Row::new()
-                    .push(Space::with_width(first_column_offset))
-                    .push(Text::new("Status:").width(first_column_width))
-                    .push(Space::with_width(Length::Fill))
-                    .push(Text::new(status_text))
-                    .push(Space::with_width(Length::Fill)),
-            )
-            .push(Space::with_height(10))
-            .push(
-                Row::new()
-                    .push(Space::with_width(Length::Fill))
-                    .push_maybe(action_button)
-                    .push(Space::with_width(Length::Fill)),
-            ),
+        Row::new()
+            .push(Space::with_width(first_column_offset))
+            .push(Text::new("Status:").width(first_column_width))
+            .push(Space::with_width(Length::Fill))
+            .push(Text::new(status_text))
+            .push(Space::with_width(Length::Fill)),
     )
     .style(theme::Container::Frame)
     .padding(10)
