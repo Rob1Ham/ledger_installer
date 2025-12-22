@@ -62,11 +62,24 @@ We plan on releasing binaries in the future.
 ### CLI
 
 Another way of using this is the CLI, which directly hooks up into the functionalities offered by
-the Rust crate. The CLI will talk to a Ledger device connected by USB. The commands are communicated
-using an environment variable, `LEDGER_COMMAND`. Another env var lets you switch to testnet (for
-instance to install the test app), simply set `LEDGER_TESTNET` to any value.
+the Rust crate. The CLI will talk to a Ledger device connected by USB.
 
-For now those commands are implemented:
+#### Interactive Mode (Recommended)
+
+Simply run the CLI without any arguments to enter interactive mode:
+```
+cargo run -p ledger_manager_cli
+```
+
+This presents a menu where you can navigate all available options for both mainnet and testnet
+Bitcoin apps without needing to restart the application.
+
+#### Legacy Mode (Environment Variables)
+
+For scripting or automation, commands can be passed via environment variables. Set `LEDGER_COMMAND`
+to specify the action. Set `LEDGER_TESTNET` to any value to target the Bitcoin Test app instead.
+
+Available commands:
 - `getinfo`: get information (such as the list of installed apps) for your device
 - `genuinecheck`: check your Ledger device is genuine
 - `installapp`: install the Bitcoin app on your device
@@ -75,7 +88,25 @@ For now those commands are implemented:
 
 ### Examples
 
-#### Checking your Ledger is genuine
+#### Using Interactive Mode
+
+```
+cargo run -p ledger_manager_cli
+```
+```
+═══════════════════════════════════════
+  Bacca - Ledger Bitcoin Manager
+═══════════════════════════════════════
+
+? Select an option ›
+❯ Get Device Info
+  Genuine Check
+  Bitcoin (Mainnet)
+  Bitcoin Test (Testnet)
+  Exit
+```
+
+#### Checking your Ledger is genuine (Legacy Mode)
 
 ```
 LEDGER_COMMAND=genuinecheck cargo run -p ledger_manager_cli
@@ -85,7 +116,7 @@ Querying Ledger's remote HSM to perform the genuine check. You might have to con
 Success. Your Ledger is genuine.
 ```
 
-#### Installing the Bitcoin Test app on your Ledger
+#### Installing the Bitcoin Test app on your Ledger (Legacy Mode)
 
 ```
 LEDGER_TESTNET=1 LEDGER_COMMAND=installapp cargo run -p ledger_manager_cli

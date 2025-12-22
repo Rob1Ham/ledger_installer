@@ -6,7 +6,7 @@ use form_urlencoded::Serializer as UrlSerializer;
 use ledger_manager::{
     bitcoin_latest_app, genuine_check, get_latest_apps,
     ledger_transport_hidapi::{hidapi::HidApi, TransportNativeHID},
-    list_installed_apps, query_via_websocket, DeviceInfo, BASE_SOCKET_URL,
+    list_installed_apps, open_bitcoin_app, query_via_websocket, DeviceInfo, BASE_SOCKET_URL,
 };
 use std::fmt::{Display, Formatter};
 use std::time::Duration;
@@ -318,6 +318,8 @@ pub enum LedgerMessage {
     InstallMain,
     UpdateTest,
     InstallTest,
+    OpenMain,
+    OpenTest,
     TryConnect,
     GenuineCheck,
 
@@ -370,6 +372,8 @@ impl LedgerService {
             LedgerMessage::InstallMain => self.install_main(),
             LedgerMessage::UpdateTest => self.update_test(),
             LedgerMessage::InstallTest => self.install_test(),
+            LedgerMessage::OpenMain => self.open_app(false),
+            LedgerMessage::OpenTest => self.open_app(true),
             LedgerMessage::GenuineCheck => self.genuine_check(),
             _ => {
                 log::debug!("LedgerService.handle_message({:?}) -> unhandled!", msg)
@@ -516,6 +520,34 @@ impl LedgerService {
 
     fn update_test(&mut self) {
         self.install(true);
+    }
+
+    fn open_app(&mut self, testnet: bool) {
+        log::info!("LedgerService::open_app(testnet={})", testnet);
+        let app_name = if testnet { "Bitcoin Test" } else { "Bitcoin" };
+        if let Some(transport) = self.connect() {
+            self.send_to_gui(LedgerMessage::DisplayMessage(
+                format!("Opening {} app...", app_name),
+                false,
+            ));
+            if let Err(e) = open_bitcoin_app(&transport, testnet) {
+                self.send_to_gui(LedgerMessage::DisplayMessage(
+                    format!("Error opening {} app: {}", app_name, e),
+                    true,
+                ));
+            } else {
+                self.send_to_gui(LedgerMessage::DisplayMessage(
+                    format!("{} app opened successfully.", app_name),
+                    false,
+                ));
+            }
+        } else {
+            log::info!("Cannot connect to device!");
+            self.send_to_gui(LedgerMessage::DisplayMessage(
+                "Cannot connect to device!".to_string(),
+                true,
+            ));
+        }
     }
 
     fn genuine_check(&mut self) {
