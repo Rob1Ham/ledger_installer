@@ -239,6 +239,37 @@ fn parse_installed_apps(data: &[u8]) -> Vec<(String, Vec<u8>)> {
     apps
 }
 
+/// Query app info by hashes from Ledger API
+async fn get_apps_by_hashes(hashes: Vec<Vec<u8>>) -> Result<Vec<Option<BitcoinAppInfo>>, String> {
+    if hashes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let hashes_hex: Vec<serde_json::Value> = hashes
+        .into_iter()
+        .map(|h| serde_json::Value::String(hex::encode(&h)))
+        .collect();
+
+    let url = format!(
+        "{}/apps/hash?livecommonversion={}",
+        BASE_API_V2_URL, LIVE_COMMON_VERSION
+    );
+
+    let resp = Request::post(&url)
+        .header("Content-Type", "application/json")
+        .body(serde_json::Value::Array(hashes_hex).to_string())
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !resp.ok() {
+        return Err(format!("Failed to get apps by hash: {}", resp.status()));
+    }
+
+    resp.json().await.map_err(|e| e.to_string())
+}
+
 fn deser_apdu_command(hex_str: &str) -> Result<APDUCommand<Vec<u8>>, String> {
     let bytes = hex::decode(hex_str).map_err(|e| e.to_string())?;
     if bytes.len() < 5 {
@@ -358,12 +389,41 @@ pub async fn get_device_info() -> Result<JsValue, JsValue> {
         }
     }
 
-    let bitcoin_installed = all_apps
+    // Find Bitcoin and Bitcoin Test apps and their hashes
+    let bitcoin_app = all_apps
         .iter()
-        .any(|(name, _)| name.to_lowercase() == "bitcoin");
-    let bitcoin_test_installed = all_apps
+        .find(|(name, _)| name.to_lowercase() == "bitcoin");
+    let bitcoin_test_app = all_apps
         .iter()
-        .any(|(name, _)| name.to_lowercase() == "bitcoin test");
+        .find(|(name, _)| name.to_lowercase() == "bitcoin test");
+
+    let bitcoin_installed = bitcoin_app.is_some();
+    let bitcoin_test_installed = bitcoin_test_app.is_some();
+
+    // Get version info by querying API with hashes
+    let mut bitcoin_version = None;
+    let mut bitcoin_test_version = None;
+
+    let mut hashes_to_query = Vec::new();
+    if let Some((_, hash)) = bitcoin_app {
+        hashes_to_query.push(hash.clone());
+    }
+    if let Some((_, hash)) = bitcoin_test_app {
+        hashes_to_query.push(hash.clone());
+    }
+
+    if !hashes_to_query.is_empty() {
+        if let Ok(app_infos) = get_apps_by_hashes(hashes_to_query).await {
+            for app_info in app_infos.into_iter().flatten() {
+                let name_lower = app_info.version_name.to_lowercase();
+                if name_lower == "bitcoin" {
+                    bitcoin_version = Some(app_info.version);
+                } else if name_lower == "bitcoin test" {
+                    bitcoin_test_version = Some(app_info.version);
+                }
+            }
+        }
+    }
 
     let info = DeviceInfo {
         connected: true,
@@ -380,9 +440,9 @@ pub async fn get_device_info() -> Result<JsValue, JsValue> {
             None
         },
         bitcoin_installed,
-        bitcoin_version: None,
+        bitcoin_version,
         bitcoin_test_installed,
-        bitcoin_test_version: None,
+        bitcoin_test_version,
     };
 
     Ok(serde_wasm_bindgen::to_value(&info)?)
