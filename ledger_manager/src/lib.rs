@@ -9,6 +9,8 @@
 //! - `desktop` (default): Native USB HID transport via `ledger-transport-hidapi`
 //! - `web`: WebHID transport for browser/WASM environments
 
+// Firmware update module - desktop only (uses minreq, tungstenite, hidapi)
+#[cfg(feature = "desktop")]
 pub mod firmware;
 
 // Transport abstraction layer
