@@ -3,26 +3,33 @@
 //! This crate provides JavaScript-callable functions for managing Ledger devices
 //! from a web browser using the WebHID API.
 
+mod apdu;
+mod parsing;
+mod types;
+
+use apdu::{deser_apdu_command, CONTINUE_LIST_APPS, GET_VERSION, LIST_APPS};
 use gloo_net::http::Request;
 use gloo_net::websocket::{futures::WebSocket, Message};
 use ledger_manager::ledger_apdu::APDUCommand;
 use ledger_manager::transport::{is_webhid_supported, WebHidTransport};
+use ledger_manager::{
+    BASE_API_V1_URL, BASE_API_V2_URL, BASE_SOCKET_URL, LIVE_COMMON_VERSION, PROVIDER,
+};
+use parsing::{parse_installed_apps, parse_version_info};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::rc::Rc;
+use types::{
+    BitcoinAppInfo, DeviceVersion, DeviceVersionResponseApi, FinalFirmwareApi,
+    FirmwareInfoResponse, FirmwareVersionIdResponse, HsmMessage, HsmMessageData,
+    LatestFirmwareResponseApi, OsuFirmwareApi,
+};
 use wasm_bindgen::prelude::*;
 
 // Global transport instance (stored between calls)
 thread_local! {
     static TRANSPORT: RefCell<Option<Rc<WebHidTransport>>> = const { RefCell::new(None) };
 }
-
-// Ledger API constants
-const LIVE_COMMON_VERSION: &str = "34.0.0";
-const PROVIDER: u32 = 1;
-const BASE_API_V1_URL: &str = "https://manager.api.live.ledger.com/api";
-const BASE_API_V2_URL: &str = "https://manager.api.live.ledger.com/api/v2";
-const BASE_SOCKET_URL: &str = "wss://scriptrunner.api.live.ledger.com/update";
 
 /// Initialize panic hook for better error messages in console.
 #[wasm_bindgen(start)]
@@ -49,47 +56,6 @@ pub struct DeviceInfo {
 pub struct OperationResult {
     pub success: bool,
     pub message: String,
-}
-
-// API response types
-#[derive(Debug, Clone, Deserialize)]
-struct DeviceVersion {
-    id: i64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct FirmwareInfoResponse {
-    perso: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct BitcoinAppInfo {
-    #[serde(rename = "versionName")]
-    version_name: String,
-    #[allow(dead_code)]
-    version: String,
-    perso: String,
-    #[serde(rename = "deleteKey")]
-    delete_key: String,
-    firmware: String,
-    #[serde(rename = "firmwareKey")]
-    firmware_key: String,
-    hash: String,
-}
-
-// HSM WebSocket message types
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-enum HsmMessageData {
-    Command(String),
-    CommandList(Vec<String>),
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct HsmMessage {
-    query: String,
-    nonce: u32,
-    data: Option<HsmMessageData>,
 }
 
 /// Check if WebHID is supported in the current browser.
@@ -124,31 +90,6 @@ pub async fn connect_device() -> Result<JsValue, JsValue> {
     }
 }
 
-// APDU commands
-const GET_VERSION: APDUCommand<&[u8]> = APDUCommand {
-    cla: 0xe0,
-    ins: 0x01,
-    p1: 0x00,
-    p2: 0x00,
-    data: &[],
-};
-
-const LIST_APPS: APDUCommand<&[u8]> = APDUCommand {
-    cla: 0xe0,
-    ins: 0xde,
-    p1: 0x00,
-    p2: 0x00,
-    data: &[],
-};
-
-const CONTINUE_LIST_APPS: APDUCommand<&[u8]> = APDUCommand {
-    cla: 0xe0,
-    ins: 0xdf,
-    p1: 0x00,
-    p2: 0x00,
-    data: &[],
-};
-
 /// Stored device info for API calls
 #[derive(Clone)]
 struct StoredDeviceInfo {
@@ -158,85 +99,6 @@ struct StoredDeviceInfo {
 
 thread_local! {
     static DEVICE_INFO: RefCell<Option<StoredDeviceInfo>> = const { RefCell::new(None) };
-}
-
-/// Parse device version info from APDU response
-fn parse_version_info(data: &[u8]) -> Option<(u32, String, Option<String>)> {
-    if data.len() < 5 {
-        return None;
-    }
-
-    let target_id = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
-    let mut i = 4;
-    let ver_len = data[i] as usize;
-    i += 1;
-
-    if data.len() < i + ver_len + 1 {
-        return None;
-    }
-
-    let version = std::str::from_utf8(&data[i..i + ver_len]).ok()?.to_string();
-    i += ver_len;
-
-    let flags_len = data[i] as usize;
-    i += 1 + flags_len;
-
-    let mcu_version = if data.len() > i {
-        let mcu_len = data[i] as usize;
-        i += 1;
-        if data.len() >= i + mcu_len {
-            let mcu = &data[i..i + mcu_len];
-            let mcu = if !mcu.is_empty() && mcu[mcu.len() - 1] == 0 {
-                &mcu[..mcu.len() - 1]
-            } else {
-                mcu
-            };
-            std::str::from_utf8(mcu).ok().map(|s| s.to_string())
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    Some((target_id, version, mcu_version))
-}
-
-/// Parse installed apps from APDU response
-fn parse_installed_apps(data: &[u8]) -> Vec<(String, Vec<u8>)> {
-    let mut apps = Vec::new();
-
-    if data.is_empty() || data[0] != 0x01 {
-        return apps;
-    }
-
-    let mut i = 1;
-    while i < data.len() {
-        if data.len() < i + 1 + 2 + 2 + 32 + 32 + 1 {
-            break;
-        }
-
-        let len = data[i] as usize;
-        i += 1;
-        i += 2; // blocks
-        i += 2; // flags
-        i += 32; // hash_code_data
-        let hash = data[i..i + 32].to_vec();
-        i += 32;
-        let name_len = data[i] as usize;
-        i += 1;
-
-        if data.len() < i + name_len || len != name_len + 70 {
-            break;
-        }
-
-        if let Ok(name) = std::str::from_utf8(&data[i..i + name_len]) {
-            apps.push((name.to_string(), hash));
-        }
-        i += name_len;
-    }
-
-    apps
 }
 
 /// Query app info by hashes from Ledger API
@@ -268,26 +130,6 @@ async fn get_apps_by_hashes(hashes: Vec<Vec<u8>>) -> Result<Vec<Option<BitcoinAp
     }
 
     resp.json().await.map_err(|e| e.to_string())
-}
-
-fn deser_apdu_command(hex_str: &str) -> Result<APDUCommand<Vec<u8>>, String> {
-    let bytes = hex::decode(hex_str).map_err(|e| e.to_string())?;
-    if bytes.len() < 5 {
-        return Err("Invalid command".into());
-    }
-
-    let (cla, ins, p1, p2, data_len) = (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4] as usize);
-    if bytes.len() != 5 + data_len {
-        return Err("Invalid command".into());
-    }
-
-    Ok(APDUCommand {
-        cla,
-        ins,
-        p1,
-        p2,
-        data: bytes[5..].to_vec(),
-    })
 }
 
 /// Get device information.
@@ -831,65 +673,6 @@ pub fn log(message: &str) {
 // ============================================================================
 // Firmware Update Types and Functions
 // ============================================================================
-
-/// Response from /get_device_version endpoint
-#[derive(Debug, Clone, Deserialize)]
-struct DeviceVersionResponseApi {
-    id: i64,
-    #[serde(default)]
-    se_firmware_final_versions: Vec<i64>,
-}
-
-/// Response from /get_firmware_version endpoint for getting current version ID
-#[derive(Debug, Clone, Deserialize)]
-struct FirmwareVersionIdResponse {
-    id: i64,
-}
-
-/// OSU firmware metadata
-#[derive(Debug, Clone, Deserialize)]
-struct OsuFirmwareApi {
-    #[serde(default)]
-    id: i64,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    perso: String,
-    #[serde(default)]
-    firmware: String,
-    #[serde(default)]
-    firmware_key: String,
-    #[serde(default)]
-    hash: String,
-    #[serde(default)]
-    next_se_firmware_final_version: i64,
-}
-
-/// Response from /get_latest_firmware endpoint
-#[derive(Debug, Clone, Deserialize)]
-struct LatestFirmwareResponseApi {
-    result: String,
-    #[serde(default)]
-    se_firmware_osu_version: Option<OsuFirmwareApi>,
-}
-
-/// Final firmware metadata
-#[derive(Debug, Clone, Deserialize)]
-struct FinalFirmwareApi {
-    id: i64,
-    #[serde(default)]
-    version: String,
-    #[serde(default)]
-    perso: String,
-    #[serde(default)]
-    firmware: String,
-    #[serde(default)]
-    firmware_key: String,
-    #[serde(default)]
-    hash: String,
-    #[serde(default)]
-    mcu_versions: Vec<i64>,
-}
 
 /// Firmware update info returned to JavaScript
 #[derive(Serialize, Deserialize)]
