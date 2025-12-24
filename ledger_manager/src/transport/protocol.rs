@@ -1,7 +1,7 @@
 //! Ledger HID protocol implementation (platform-agnostic)
 //!
 //! This module implements the Ledger HID framing protocol for APDU commands.
-//! Reference: https://github.com/LedgerHQ/ledger-live/tree/develop/libs/ledgerjs
+//! Reference: <https://github.com/LedgerHQ/ledger-live/tree/develop/libs/ledgerjs>
 //!
 //! The Ledger HID protocol wraps APDU commands into 64-byte HID packets:
 //! - First packet: [channel_id (2)] [tag (1)] [seq (2)] [length (2)] [data (57)]

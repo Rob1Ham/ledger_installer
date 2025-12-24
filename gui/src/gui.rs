@@ -336,7 +336,7 @@ impl Application for LedgerInstaller {
             None
         };
 
-        let reset_alarm: Option<Row<Message, Theme, Renderer>> =
+        let reset_alarm: Option<Row<'_, Message, Theme, Renderer>> =
             if self.alarm && self.ledger_model.is_some() {
                 Some(
                     Row::new()
