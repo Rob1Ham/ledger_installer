@@ -74,6 +74,7 @@ pub fn install_app(ledger_api: &TransportNativeHID, is_testnet: bool) -> Result<
         )),
         Err(InstallErr::AppNotFound) => Err(format!("Could not get info about {} app.", app_name)),
         Err(InstallErr::Any(e)) => Err(format!("Error installing {} app: {}.", app_name, e)),
+        Err(_) => Err(format!("Unknown error installing {} app.", app_name)),
     }
 }
 
@@ -97,6 +98,7 @@ pub fn update_app(ledger_api: &TransportNativeHID, is_testnet: bool) -> Result<S
             app_name
         )),
         Err(UpdateErr::Any(e)) => Err(format!("Error updating {} app: {}.", app_name, e)),
+        Err(_) => Err(format!("Unknown error updating {} app.", app_name)),
     }
 }
 
