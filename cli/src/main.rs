@@ -55,6 +55,18 @@ impl Command {
 
 /// Run in legacy mode using environment variable commands.
 fn run_legacy_mode(command: Command) {
+    // For firmware update, use the dedicated function that handles transport ownership
+    if matches!(command, Command::UpdateFirmware) {
+        match operations::perform_firmware_update() {
+            Ok(msg) => println!("{}", msg),
+            Err(msg) => {
+                eprintln!("{}", msg);
+                process::exit(1);
+            }
+        }
+        return;
+    }
+
     let ledger_api = match operations::connect_ledger() {
         Ok(api) => api,
         Err(e) => {
@@ -87,10 +99,7 @@ fn run_legacy_mode(command: Command) {
         }
         Command::OpenMainApp => operations::open_app(&ledger_api, false),
         Command::OpenTestApp => operations::open_app(&ledger_api, true),
-        Command::UpdateFirmware => {
-            eprintln!("Firmware update is not yet implemented.");
-            process::exit(1);
-        }
+        Command::UpdateFirmware => unreachable!(), // Handled above
     };
 
     match result {

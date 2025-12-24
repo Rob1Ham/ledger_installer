@@ -14,6 +14,7 @@ enum MainMenuChoice {
     GenuineCheck,
     BitcoinMainnet,
     BitcoinTestnet,
+    UpdateFirmware,
     Exit,
 }
 
@@ -50,6 +51,7 @@ fn show_main_menu() -> MainMenuChoice {
         "Genuine Check",
         "Bitcoin (Mainnet)",
         "Bitcoin Test (Testnet)",
+        "Update Firmware",
         "Exit",
     ];
 
@@ -58,13 +60,14 @@ fn show_main_menu() -> MainMenuChoice {
         .items(selections)
         .default(0)
         .interact()
-        .unwrap_or(4); // Default to Exit on error
+        .unwrap_or(5); // Default to Exit on error
 
     match selection {
         0 => MainMenuChoice::GetInfo,
         1 => MainMenuChoice::GenuineCheck,
         2 => MainMenuChoice::BitcoinMainnet,
         3 => MainMenuChoice::BitcoinTestnet,
+        4 => MainMenuChoice::UpdateFirmware,
         _ => MainMenuChoice::Exit,
     }
 }
@@ -201,6 +204,22 @@ pub fn run_interactive_mode() {
             }
             MainMenuChoice::BitcoinTestnet => {
                 run_app_submenu(&term, true);
+            }
+            MainMenuChoice::UpdateFirmware => {
+                println!();
+                println!(
+                    "{}",
+                    style("WARNING: Do NOT disconnect your device during the update!")
+                        .red()
+                        .bold()
+                );
+                println!(
+                    "{}",
+                    style("You may need to confirm operations on your device.").yellow()
+                );
+                println!();
+
+                execute_and_wait(&term, operations::perform_firmware_update);
             }
             MainMenuChoice::Exit => {
                 println!();
