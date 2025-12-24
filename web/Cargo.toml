@@ -34,3 +34,6 @@ gloo-timers = { version = "0.3", features = ["futures"] }
 futures = "0.3"
 hex = "0.4"
 urlencoding = "2.1"
+
+[lints]
+workspace = true

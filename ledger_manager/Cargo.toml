@@ -71,5 +71,5 @@ getrandom = { version = "0.2", features = ["js"], optional = true }
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = ["-O4"]
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(web_sys_unstable_apis)'] }
+[lints]
+workspace = true
